@@ -9,6 +9,7 @@ use Webpatser\Resonate\Plugins\Contracts\ServerPlugin;
 use Webpatser\Resonate\Plugins\Contracts\TickScheduler;
 use Webpatser\Resonate\Plugins\PluginContext;
 use Webpatser\Resonate\Protocols\Pusher\Channels\Channel;
+use Webpatser\ResonateUserCap\Events\UserCapExceeded;
 
 use function Fledge\Async\Redis\createRedisClient;
 
@@ -131,6 +132,8 @@ class PresenceCapPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
                 'code' => $this->errorCode,
                 'message' => $this->errorMessage,
             ]);
+
+            UserCapExceeded::dispatch($appId, $userId);
 
             return;
         }

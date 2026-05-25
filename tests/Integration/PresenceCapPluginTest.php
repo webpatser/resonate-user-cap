@@ -1,9 +1,11 @@
 <?php
 
+use Illuminate\Support\Facades\Event;
 use Predis\Client;
 use Webpatser\Resonate\Contracts\ApplicationProvider;
 use Webpatser\Resonate\Plugins\PluginContext;
 use Webpatser\Resonate\Protocols\Pusher\Contracts\ChannelManager;
+use Webpatser\ResonateUserCap\Events\UserCapExceeded;
 use Webpatser\ResonateUserCap\PresenceCapPlugin;
 use Webpatser\ResonateUserCap\Tests\Support\FakeConnection;
 
@@ -62,6 +64,8 @@ it('counts a connection on its first presence subscription', function () {
 });
 
 it('terminates the connection that would exceed the cap', function () {
+    Event::fake([UserCapExceeded::class]);
+
     // Default cap in the test config is 2.
     $app = app(ApplicationProvider::class)->findById('app-id');
     $context = new PluginContext(app(ChannelManager::class));
@@ -86,6 +90,11 @@ it('terminates the connection that would exceed the cap', function () {
     expect($first->terminated)->toBeFalse()
         ->and($second->terminated)->toBeFalse()
         ->and($third->terminated)->toBeTrue();
+
+    Event::assertDispatched(UserCapExceeded::class, function (UserCapExceeded $event) {
+        return $event->appId === 'app-id' && $event->userId === 'u-1';
+    });
+    Event::assertDispatchedTimes(UserCapExceeded::class, 1);
 
     $error = json_decode($third->messages[0], associative: true);
 
