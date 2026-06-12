@@ -110,6 +110,50 @@ it('keys counts independently by application and user', function () {
     ]);
 });
 
+it('never lets concurrent adds for one user exceed the cap', function () {
+    $cap = 5;
+    $attempts = 50;
+    $allowed = [];
+    $count = null;
+
+    runLoop(function () use ($cap, $attempts, &$allowed, &$count) {
+        $counter = makeCounter('node-a');
+
+        // Fire every add concurrently so they all race the same cap check; the
+        // pre-fix check-then-add would let far more than $cap through.
+        $closures = [];
+
+        for ($i = 0; $i < $attempts; $i++) {
+            $closures[$i] = fn () => $counter->tryAdd('app-id', 'u-1', 'sock-'.$i, $cap);
+        }
+
+        $allowed = \Fledge\Async\disperse($closures);
+        $count = $counter->count('app-id', 'u-1');
+    });
+
+    expect(array_sum(array_map('intval', $allowed)))->toBe($cap)
+        ->and($count)->toBe($cap);
+});
+
+it('counts a re-added socket idempotently against the cap', function () {
+    $results = [];
+    $count = null;
+
+    runLoop(function () use (&$results, &$count) {
+        $counter = makeCounter('node-a');
+
+        // The same socket re-subscribing must not consume extra cap slots.
+        $results[] = $counter->tryAdd('app-id', 'u-1', 'sock-1', 1);
+        $results[] = $counter->tryAdd('app-id', 'u-1', 'sock-1', 1);
+        $results[] = $counter->tryAdd('app-id', 'u-1', 'sock-2', 1);
+
+        $count = $counter->count('app-id', 'u-1');
+    });
+
+    expect($results)->toBe([true, true, false])
+        ->and($count)->toBe(1);
+});
+
 it('refresh returns false and deletes the key when the set is empty', function () {
     $result = null;
 
