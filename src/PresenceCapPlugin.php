@@ -127,7 +127,9 @@ class PresenceCapPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         $appId = $connection->app()->id();
         $cap = $this->capFor($appId);
 
-        if ($cap > 0 && $this->counter->count($appId, $userId) >= $cap) {
+        // Count and add are one atomic Redis step: concurrent subscribes for
+        // the same user can no longer all clear the check before any add lands.
+        if (! $this->counter->tryAdd($appId, $userId, $connection->id(), $cap)) {
             $this->context->terminate($connection, 'pusher:error', [
                 'code' => $this->errorCode,
                 'message' => $this->errorMessage,
@@ -137,8 +139,6 @@ class PresenceCapPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
 
             return;
         }
-
-        $this->counter->add($appId, $userId, $connection->id());
 
         $connection->setState('cap.app', $appId);
         $connection->setState('cap.user', $userId);

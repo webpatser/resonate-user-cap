@@ -15,6 +15,43 @@ use Fledge\Async\Redis\RedisClient;
 class UserConnectionCounter
 {
     /**
+     * Atomically count the union and conditionally SADD this node's socket.
+     *
+     * KEYS[1] is this node's set (always the write target and always counted);
+     * KEYS[2..n] are the other nodes' sets gathered by the caller. The script
+     * runs as one indivisible step, so concurrent subscribes for the same user
+     * are serialised by Redis: every caller re-reads the live count before its
+     * own add, which closes the check-then-add race that overshot the cap.
+     *
+     * Returns 1 when the socket is counted (newly added, already present, or
+     * the cap is disabled), 0 when the cap is reached and the add is refused.
+     */
+    private const string ADD_IF_UNDER_CAP = <<<'LUA'
+    local target = KEYS[1]
+    local socket = ARGV[2]
+
+    if redis.call('SISMEMBER', target, socket) == 1 then
+        return 1
+    end
+
+    local cap = tonumber(ARGV[1])
+    local total = 0
+
+    for i = 1, #KEYS do
+        total = total + redis.call('SCARD', KEYS[i])
+    end
+
+    if cap > 0 and total >= cap then
+        return 0
+    end
+
+    redis.call('SADD', target, socket)
+    redis.call('EXPIRE', target, tonumber(ARGV[3]))
+
+    return 1
+    LUA;
+
+    /**
      * Create a new counter.
      */
     public function __construct(
@@ -38,6 +75,38 @@ class UserConnectionCounter
         }
 
         return $total;
+    }
+
+    /**
+     * Atomically add a socket only while the user is under the cap.
+     *
+     * Gathers every node's set for the user (the local node's key is always
+     * included as the write target) and hands them to a Lua script that counts
+     * and conditionally adds in a single, indivisible Redis call. A cap of 0
+     * disables the limit, so the add always succeeds.
+     *
+     * Returns true when the socket is counted, false when the cap is reached
+     * and the connection must be rejected.
+     */
+    public function tryAdd(string $appId, string $userId, string $socketId, int $cap): bool
+    {
+        $target = $this->keys->userKey($appId, $userId, $this->node);
+
+        $keys = [$target];
+
+        foreach ($this->nodeKeys($appId, $userId) as $key) {
+            if ($key !== $target) {
+                $keys[] = $key;
+            }
+        }
+
+        $allowed = $this->redis->eval(
+            self::ADD_IF_UNDER_CAP,
+            $keys,
+            [$cap, $socketId, $this->ttl],
+        );
+
+        return (int) $allowed === 1;
     }
 
     /**

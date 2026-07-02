@@ -25,7 +25,7 @@ class PresenceCapKeys
      */
     public function userKey(string $appId, string $userId, string $node): string
     {
-        return $this->prefix.':'.$appId.':'.$userId.':'.$node;
+        return $this->prefix.':'.$appId.':'.$this->encodeIdentity($userId).':'.$node;
     }
 
     /**
@@ -33,7 +33,26 @@ class PresenceCapKeys
      */
     public function userScanPattern(string $appId, string $userId): string
     {
-        return $this->prefix.':'.$appId.':'.$userId.':*';
+        return $this->prefix.':'.$appId.':'.$this->encodeIdentity($userId).':*';
+    }
+
+    /**
+     * Neutralise an untrusted identity segment before it forms a key.
+     *
+     * The `user_id` arrives from presence `channel_data`, which is only weakly
+     * constrained, so a value may carry a `:` (colliding key namespaces) or a
+     * glob metacharacter (`* ? [ ] \`) that would broaden a SCAN MATCH pattern.
+     * Each unsafe byte, plus `%` itself, is percent-encoded so the mapping stays
+     * injective: distinct ids always yield distinct, glob-safe segments. Safe
+     * ids such as "u-7" pass through unchanged.
+     */
+    protected function encodeIdentity(string $userId): string
+    {
+        return preg_replace_callback(
+            '/[%:*?\[\]\\\\]/',
+            static fn (array $match): string => '%'.strtoupper(bin2hex($match[0])),
+            $userId,
+        );
     }
 
     /**
