@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-02
+
+### Security
+- Make the per-user connection cap atomic and sanitize the `user_id` key segment to prevent key injection and race conditions.
+
 ## [0.2.0] - 2026-05-25
 
 ### Added
@@ -35,5 +40,6 @@ Initial release.
   `vendor:publish --tag=resonate-user-cap-config`.
 
 [Unreleased]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.0...HEAD
+[0.2.1]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/webpatser/resonate-user-cap/releases/tag/v0.1.0
