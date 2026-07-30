@@ -2,6 +2,8 @@
 
 namespace Webpatser\ResonateUserCap;
 
+use RuntimeException;
+
 /**
  * The user-cap key schema.
  *
@@ -45,14 +47,23 @@ class PresenceCapKeys
      * Each unsafe byte, plus `%` itself, is percent-encoded so the mapping stays
      * injective: distinct ids always yield distinct, glob-safe segments. Safe
      * ids such as "u-7" pass through unchanged.
+     *
+     * @throws RuntimeException when the identity could not be encoded, so a
+     *                          key is never built from an unsanitised segment.
      */
     protected function encodeIdentity(string $userId): string
     {
-        return preg_replace_callback(
+        $encoded = preg_replace_callback(
             '/[%:*?\[\]\\\\]/',
             static fn (array $match): string => '%'.strtoupper(bin2hex($match[0])),
             $userId,
         );
+
+        if ($encoded === null) {
+            throw new RuntimeException('Unable to encode the user-cap identity segment.');
+        }
+
+        return $encoded;
     }
 
     /**
