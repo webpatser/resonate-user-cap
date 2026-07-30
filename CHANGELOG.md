@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-30
+
+### Changed
+
+- Widen the `webpatser/resonate` constraint to `^0.4|^0.5`. Composer treats a
+  `^0.4` caret on a 0.x package as `>=0.4 <0.5`, so this package could not be
+  installed next to a server running Resonate v0.5 even though the suite passes
+  against it. Both major lines are now accepted.
+
+## [0.2.2] - 2026-07-30
+
+### Security
+
+- `PresenceCapKeys::encodeIdentity()` now throws instead of returning an
+  unsanitised identity. `preg_replace_callback()` returns null on a PCRE error,
+  which would have handed back the raw user id as the key segment; a cap key is
+  never built from an unneutralised identity now.
+
+### Changed
+
+- CI runs the suite against a `redis:7` service container on
+  `127.0.0.1:6379`. The integration tests self-skip when Redis does not answer,
+  so the pipeline had never actually run them.
+- CI gates on Laravel Pint and on PHPStan at level 8 (larastan, no baseline and
+  no ignores), with matching `lint` and `analyse` composer scripts.
+  `testbench.yaml` keeps the Fledge Fiber providers out of package discovery so
+  larastan can boot a stock Laravel application for analysis.
+
 ## [0.2.1] - 2026-07-02
 
 ### Security
