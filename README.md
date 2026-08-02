@@ -6,9 +6,9 @@ Resonate ships an app-level `max_connections`, which caps the total. This caps p
 
 ## How it works
 
-### Identity from the first presence subscription
+### Identity from the first presence subscribe
 
-A WebSocket connection is anonymous until something tells the server who it belongs to. Pusher presence channels carry the user identity in their `channel_data`, so this plugin treats the first presence subscription as the moment a connection takes on a `user_id`. From then on, the connection counts against that user.
+A WebSocket connection is anonymous until something tells the server who it belongs to. Pusher presence channels carry the user identity in their `channel_data`, so this plugin takes a connection's `user_id` from the first presence subscribe whose signature it can verify. From then on, the connection counts against that user.
 
 Connections that never subscribe to a presence channel are never counted and never capped.
 
@@ -40,7 +40,9 @@ A check-then-add against the union can race two nodes into a one-over overshoot 
 
 ### Ghost entries heal themselves
 
-Incremental edits can go missing: Resonate deliberately swallows anything a plugin throws out of `onClose`, so a Redis hiccup during a decrement would once have left a socket id in the set with nothing behind it. The heartbeat rebuilds each tracked user's set from the connections the node actually holds, so a stale id is removed on the next beat instead of having its TTL refreshed forever. Before this, one lost decrement capped a user at 4 of their 5 slots until the node restarted.
+Incremental edits can go missing. Resonate swallows anything a plugin throws out of `onClose`, so a Redis hiccup during a decrement leaves a socket id in the set with nothing behind it. One lost decrement used to cap a user at 4 of their 5 slots until the node restarted.
+
+The heartbeat rebuilds each tracked user's set from the connections the node actually holds, so a stale id is dropped on the next beat rather than having its TTL refreshed forever.
 
 ## Installation
 
@@ -105,7 +107,8 @@ return [
 - **Presence is the identity source.** A connection that subscribes only to public or private channels has no `user_id`, so this plugin cannot and does not cap it. Pair with a custom auth plugin if you need to cap unauthenticated connections too.
 - **Reject-new, not kick-oldest.** When a user is at the cap, the *new* connection is terminated. The existing ones are untouched.
 - **Eventually consistent.** Concurrent connect bursts from one user across nodes may temporarily overshoot the cap by one; the next subscribe corrects it.
-- **One identity per connection.** A connection's `user_id` is taken from its *first* presence subscription. Later presence subscriptions with a different `user_id` are ignored for capping.
+- **One identity per connection.** A connection's `user_id` is taken from its *first* verified presence subscribe. Later presence subscribes with a different `user_id` are ignored for capping.
+- **Counted one step early.** A connection is counted when its subscribe is accepted by the cap, not when the subscription completes. If Resonate then refuses that subscribe for its own reasons (a subscription limit, say), the socket stays counted until it closes. Over-counting is the safe direction for a cap.
 - **Self-healing count.** The heartbeat (`heartbeat_interval`, default 30s) rewrites each tracked user's set from the live connections, so a lost decrement costs a slot for at most one beat rather than until the next restart.
 
 ## Requirements

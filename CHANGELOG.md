@@ -7,46 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- The heartbeat now rebuilds each tracked user's per-node set from the
-  connections the node actually holds, instead of only refreshing the TTL of a
-  non-empty set. A decrement that never landed (Resonate swallows anything a
-  plugin throws out of `onClose`) left a stale socket id behind whose TTL every
-  beat then renewed, so a user capped at 5 stayed capped at 4 until the node
-  restarted. Stale ids are dropped on the next beat now, and a user with
-  nothing live has its key removed.
-- `UserConnectionCounter::remove()` issues a single `SREM` and no longer reads
-  the size back to delete the key. The old `SREM`, `SCARD`, `DEL` sequence
-  erased any add that landed between the size check and the delete, silently
-  uncounting a live connection. Redis already drops a set with its last member,
-  so the delete was never needed.
-
-### Changed
-
-- **Behavioural:** the cap is enforced on the inbound `pusher:subscribe`
-  message instead of after the subscription succeeds. An over-cap connection
-  had already joined the presence channel and been handed the member list
-  before it was terminated, so a capped user could reconnect in a loop to
-  snapshot who was online, and the other members saw it arrive. It is now
-  refused before the subscription exists: the client gets the `pusher:error`
-  frame and nothing else.
-- Because Resonate has not verified the presence auth at that point, the plugin
-  verifies the signature itself before trusting the `user_id` in
-  `channel_data`. A subscribe with an invalid signature is relayed untouched
-  (Resonate rejects it as it always has) and is never counted, so an
-  unauthenticated client cannot consume another user's cap slots.
+## [0.3.0] - 2026-08-02
 
 ### Added
 
-- **API:** `PresenceCapPlugin` now implements `MessageInterceptor` in addition
-  to `ConnectionLifecycle`, `ServerPlugin` and `TickScheduler`. Registering the
-  plugin is unchanged; a host application that called `onSubscribe()` directly
-  to apply the cap must call `onMessage()` instead.
-- **API:** `UserConnectionCounter::sync()`, which rewrites a node's set for one
-  user to exactly the sockets it is given and reports whether the user still
-  has any. `refresh()` is kept for callers that only want to extend the TTL,
-  but the heartbeat no longer uses it.
+- `PresenceCapPlugin` implements `MessageInterceptor` alongside
+  `ConnectionLifecycle`, `ServerPlugin` and `TickScheduler`.
+- `UserConnectionCounter::sync()`: rewrite a node's set for one user to exactly
+  the sockets given, reporting whether the user still has any.
+
+### Changed
+
+- Enforce the cap on the inbound `pusher:subscribe` message instead of after
+  the subscription succeeds.
+- Verify the presence auth signature before trusting the `user_id` in
+  `channel_data`; a subscribe that fails the check is relayed untouched and
+  never counted.
+
+### Fixed
+
+- Rebuild each tracked user's per-node set from live connections on every
+  heartbeat, so a lost decrement no longer holds a cap slot until the node
+  restarts.
+- Remove a socket with a single `SREM`. The previous `SREM`, `SCARD`, `DEL`
+  sequence erased any add that landed between the size check and the delete.
+
+### Upgrading
+
+Registration is unchanged. Three behaviour changes matter.
+
+**Over-cap connections are refused before the subscription forms.** Enforcement
+moved from a connection-lifecycle hook to a `MessageInterceptor` on
+`pusher:subscribe`. A refused connection now receives the `pusher:error` frame
+and nothing else: no `subscription_succeeded`, no presence member list, and no
+`member_added` broadcast to the other members. Resonate has not verified the
+presence auth at that point, so the plugin verifies the HMAC itself before
+trusting the identity in `channel_data`; an unverifiable subscribe is relayed
+untouched and never counted. A host application that called `onSubscribe()`
+directly to apply the cap must call `onMessage()` instead.
+
+**The heartbeat repairs the count.** The reconcile pass rebuilds each user's
+set from the connections the node holds instead of refreshing the TTL of
+whatever Redis has. Ghost entries left behind by a decrement that never landed
+are dropped on the next beat rather than consuming a cap slot until restart.
+`refresh()` is kept for callers that only want to extend a TTL; the heartbeat
+uses `sync()`.
+
+**One residual over-count.** A connection is counted one step before its
+subscribe completes. If Resonate then refuses that subscribe for its own
+reasons (a subscription limit, say), the socket stays counted until it closes.
+That errs towards over-counting, the safe direction for a cap.
 
 ## [0.2.3] - 2026-07-30
 
@@ -108,7 +118,10 @@ Initial release.
 - `UserCapServiceProvider`: merges config and publishes it via
   `vendor:publish --tag=resonate-user-cap-config`.
 
-[Unreleased]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/webpatser/resonate-user-cap/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.3...v0.3.0
+[0.2.3]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/webpatser/resonate-user-cap/releases/tag/v0.1.0
