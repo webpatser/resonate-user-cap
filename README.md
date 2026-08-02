@@ -22,17 +22,25 @@ For each `(app_id, user_id)`, the plugin keeps a per-node Redis set of the socke
 
 A user's cluster-wide count is the union of every node's set: `SCAN {prefix}:{app}:{user}:*` then `SCARD` each. This is the same self-healing pattern as `webpatser/resonate-roster`: a dead node's set expires on its own, and a live node never holds a dead node's count open.
 
-### Terminate on cap
+### Rejected before the subscription happens
 
-On a presence subscribe the plugin reads the current cluster count. If accepting the connection would meet or exceed the cap, the plugin sends a Pusher error frame and closes the connection:
+The cap is applied to the inbound `pusher:subscribe` message, before Resonate establishes the subscription. If accepting the connection would meet or exceed the cap, the plugin sends a Pusher error frame, closes the connection, and consumes the message:
 
 ```json
 {"event": "pusher:error", "data": {"code": 4301, "message": "Too many connections for this user"}}
 ```
 
-Otherwise it adds the socket to this node's set and remembers the identity in connection state, so `onClose` can decrement cleanly when the connection drops.
+Nothing else reaches the client: it never joins the channel, never receives `subscription_succeeded`, and never sees the presence member list. The other members are not told it arrived either.
+
+Because Resonate has not verified the presence auth yet at that point, the plugin verifies the signature itself before it trusts the `user_id` in `channel_data`. A subscribe whose signature does not check out is passed through untouched (Resonate rejects it as usual) and is never counted, so nobody can burn another user's cap slots by claiming their identity.
+
+Otherwise the socket is added to this node's set and the identity is remembered in connection state, so `onClose` can decrement cleanly when the connection drops.
 
 A check-then-add against the union can race two nodes into a one-over overshoot under heavy concurrent connect bursts; the next check immediately corrects it. An under-cap is not possible.
+
+### Ghost entries heal themselves
+
+Incremental edits can go missing: Resonate deliberately swallows anything a plugin throws out of `onClose`, so a Redis hiccup during a decrement would once have left a socket id in the set with nothing behind it. The heartbeat rebuilds each tracked user's set from the connections the node actually holds, so a stale id is removed on the next beat instead of having its TTL refreshed forever. Before this, one lost decrement capped a user at 4 of their 5 slots until the node restarted.
 
 ## Installation
 
@@ -98,6 +106,7 @@ return [
 - **Reject-new, not kick-oldest.** When a user is at the cap, the *new* connection is terminated. The existing ones are untouched.
 - **Eventually consistent.** Concurrent connect bursts from one user across nodes may temporarily overshoot the cap by one; the next subscribe corrects it.
 - **One identity per connection.** A connection's `user_id` is taken from its *first* presence subscription. Later presence subscriptions with a different `user_id` are ignored for capping.
+- **Self-healing count.** The heartbeat (`heartbeat_interval`, default 30s) rewrites each tracked user's set from the live connections, so a lost decrement costs a slot for at most one beat rather than until the next restart.
 
 ## Requirements
 

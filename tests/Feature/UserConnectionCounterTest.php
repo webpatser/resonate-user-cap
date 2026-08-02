@@ -154,6 +154,82 @@ it('counts a re-added socket idempotently against the cap', function () {
         ->and($count)->toBe(1);
 });
 
+it('removes the last socket without issuing a delete', function () {
+    // The old remove() read the size back and deleted the key when it hit
+    // zero, which erased any add that landed in between. Redis already drops
+    // a set with its last member, so the delete is both unnecessary and the
+    // whole race window: assert it is never sent.
+    $this->redis->executeRaw(['CONFIG', 'RESETSTAT']);
+
+    runLoop(function () {
+        $counter = makeCounter('node-a');
+        $counter->add('app-id', 'u-1', 'sock-1');
+        $counter->remove('app-id', 'u-1', 'sock-1');
+    });
+
+    $stats = $this->redis->executeRaw(['INFO', 'commandstats']);
+
+    if (! str_contains((string) $stats, 'cmdstat_sadd')) {
+        $this->markTestSkipped('Redis command stats unavailable');
+    }
+
+    expect((string) $stats)->not->toContain('cmdstat_del')
+        ->and($this->redis->exists('cap-test:app-id:u-1:node-a'))->toBe(0);
+});
+
+it('does not erase a socket added while the last one is being removed', function () {
+    $count = null;
+
+    runLoop(function () use (&$count) {
+        $counter = makeCounter('node-a');
+        $counter->add('app-id', 'u-1', 'sock-1');
+
+        // A close and a fresh subscribe for the same user, in flight together.
+        \Fledge\Async\disperse([
+            fn () => $counter->remove('app-id', 'u-1', 'sock-1'),
+            fn () => $counter->add('app-id', 'u-1', 'sock-2'),
+        ]);
+
+        $count = $counter->count('app-id', 'u-1');
+    });
+
+    expect($count)->toBe(1);
+});
+
+it('syncs a node set to exactly the sockets it is given', function () {
+    $result = null;
+
+    runLoop(function () use (&$result) {
+        $counter = makeCounter('node-a');
+        $counter->add('app-id', 'u-1', 'sock-1');
+        $counter->add('app-id', 'u-1', 'stale-sock');
+
+        // sock-1 stays, stale-sock goes, sock-2 is added back.
+        $result = $counter->sync('app-id', 'u-1', ['sock-1', 'sock-2']);
+    });
+
+    $members = $this->redis->smembers('cap-test:app-id:u-1:node-a');
+    sort($members);
+
+    expect($result)->toBeTrue()
+        ->and($members)->toBe(['sock-1', 'sock-2'])
+        ->and($this->redis->ttl('cap-test:app-id:u-1:node-a'))->toBeGreaterThan(0);
+});
+
+it('syncing an empty socket list drops the key and reports the user gone', function () {
+    $result = null;
+
+    runLoop(function () use (&$result) {
+        $counter = makeCounter('node-a');
+        $counter->add('app-id', 'u-1', 'sock-1');
+
+        $result = $counter->sync('app-id', 'u-1', []);
+    });
+
+    expect($result)->toBeFalse()
+        ->and($this->redis->exists('cap-test:app-id:u-1:node-a'))->toBe(0);
+});
+
 it('refresh returns false and deletes the key when the set is empty', function () {
     $result = null;
 

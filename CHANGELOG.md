@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The heartbeat now rebuilds each tracked user's per-node set from the
+  connections the node actually holds, instead of only refreshing the TTL of a
+  non-empty set. A decrement that never landed (Resonate swallows anything a
+  plugin throws out of `onClose`) left a stale socket id behind whose TTL every
+  beat then renewed, so a user capped at 5 stayed capped at 4 until the node
+  restarted. Stale ids are dropped on the next beat now, and a user with
+  nothing live has its key removed.
+- `UserConnectionCounter::remove()` issues a single `SREM` and no longer reads
+  the size back to delete the key. The old `SREM`, `SCARD`, `DEL` sequence
+  erased any add that landed between the size check and the delete, silently
+  uncounting a live connection. Redis already drops a set with its last member,
+  so the delete was never needed.
+
+### Changed
+
+- **Behavioural:** the cap is enforced on the inbound `pusher:subscribe`
+  message instead of after the subscription succeeds. An over-cap connection
+  had already joined the presence channel and been handed the member list
+  before it was terminated, so a capped user could reconnect in a loop to
+  snapshot who was online, and the other members saw it arrive. It is now
+  refused before the subscription exists: the client gets the `pusher:error`
+  frame and nothing else.
+- Because Resonate has not verified the presence auth at that point, the plugin
+  verifies the signature itself before trusting the `user_id` in
+  `channel_data`. A subscribe with an invalid signature is relayed untouched
+  (Resonate rejects it as it always has) and is never counted, so an
+  unauthenticated client cannot consume another user's cap slots.
+
+### Added
+
+- **API:** `PresenceCapPlugin` now implements `MessageInterceptor` in addition
+  to `ConnectionLifecycle`, `ServerPlugin` and `TickScheduler`. Registering the
+  plugin is unchanged; a host application that called `onSubscribe()` directly
+  to apply the cap must call `onMessage()` instead.
+- **API:** `UserConnectionCounter::sync()`, which rewrites a node's set for one
+  user to exactly the sockets it is given and reports whether the user still
+  has any. `refresh()` is kept for callers that only want to extend the TTL,
+  but the heartbeat no longer uses it.
+
 ## [0.2.3] - 2026-07-30
 
 ### Changed

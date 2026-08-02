@@ -127,18 +127,63 @@ class UserConnectionCounter
     }
 
     /**
-     * Remove a socket from this node's set, deleting the key when it empties.
+     * Remove a socket from this node's set.
+     *
+     * A single SREM, with no follow-up delete. The old read-then-delete
+     * (SREM, SCARD, DEL) had a window between the size check and the delete:
+     * an add that landed in it was erased along with the key, silently
+     * uncounting a live connection. The delete was never needed anyway,
+     * because Redis drops a set as soon as its last member is removed.
      */
     public function remove(string $appId, string $userId, string $socketId): void
     {
+        $this->redis->getSet($this->keys->userKey($appId, $userId, $this->node))->remove($socketId);
+    }
+
+    /**
+     * Rebuild this node's set for a user so it holds exactly the given sockets.
+     *
+     * The heartbeat's authoritative pass. Anything in Redis that is no longer
+     * live is removed, anything live that is missing is added, and the TTL is
+     * refreshed. Incremental edits can be lost (a decrement that throws is
+     * swallowed by the plugin manager), and a lost decrement used to leave a
+     * stale socket id whose TTL the heartbeat then refreshed forever, holding
+     * a cap slot until the node restarted. Rebuilding from the live set is
+     * what makes those ghosts self-healing.
+     *
+     * Returns true while the user still has sockets on this node, false once
+     * the list is empty and the key has been dropped.
+     *
+     * @param  list<string>  $socketIds
+     */
+    public function sync(string $appId, string $userId, array $socketIds): bool
+    {
         $key = $this->keys->userKey($appId, $userId, $this->node);
-        $set = $this->redis->getSet($key);
 
-        $set->remove($socketId);
-
-        if ($set->getSize() === 0) {
+        if ($socketIds === []) {
             $this->redis->delete($key);
+
+            return false;
         }
+
+        $set = $this->redis->getSet($key);
+        $current = $set->getAll();
+
+        $stale = array_values(array_diff($current, $socketIds));
+
+        if ($stale !== []) {
+            $set->remove(...$stale);
+        }
+
+        $missing = array_values(array_diff($socketIds, $current));
+
+        if ($missing !== []) {
+            $set->add(...$missing);
+        }
+
+        $this->redis->expireIn($key, $this->ttl);
+
+        return true;
     }
 
     /**
