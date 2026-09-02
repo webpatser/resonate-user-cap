@@ -229,15 +229,3 @@ it('syncing an empty socket list drops the key and reports the user gone', funct
     expect($result)->toBeFalse()
         ->and($this->redis->exists('cap-test:app-id:u-1:node-a'))->toBe(0);
 });
-
-it('refresh returns false and deletes the key when the set is empty', function () {
-    $result = null;
-
-    runLoop(function () use (&$result) {
-        $counter = makeCounter('node-a');
-        $result = $counter->refresh('app-id', 'u-unknown');
-    });
-
-    expect($result)->toBeFalse()
-        ->and($this->redis->exists('cap-test:app-id:u-unknown:node-a'))->toBe(0);
-});

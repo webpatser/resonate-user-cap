@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Require `webpatser/fledge-fiber` `^13.29` (was `^13.4`), and build the plugin's connection with `RedisConfig::fromParameters()` rather than a hand-assembled URI. TLS, unix sockets, ACL usernames, `read_timeout`, retry settings, client name and tcp keepalive reach the connection now; a password containing a reserved character used to fail authentication outright. A configured `url` still wins.
+- `connection.scheme` (`RESONATE_USER_CAP_REDIS_SCHEME`, default `tcp`) selects the transport.
+
+### Removed
+
+- `UserConnectionCounter::refresh()`. The heartbeat has rebuilt each user's set through `sync()` since 0.3.0, which refreshes the TTL as part of the rebuild, so nothing had called `refresh()` since. A host that called it directly should call `sync()` with the sockets it still holds.
+
 ## [0.3.1] - 2026-08-02
 
 ### Fixed

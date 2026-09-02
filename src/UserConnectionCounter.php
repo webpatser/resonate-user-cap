@@ -187,27 +187,6 @@ class UserConnectionCounter
     }
 
     /**
-     * Refresh the TTL on this node's set for a user, if it still has members.
-     *
-     * Called from the heartbeat. Returns true while there is still anything
-     * to keep alive, false once this node has nothing recorded for the user.
-     */
-    public function refresh(string $appId, string $userId): bool
-    {
-        $key = $this->keys->userKey($appId, $userId, $this->node);
-
-        if ($this->redis->getSet($key)->getSize() === 0) {
-            $this->redis->delete($key);
-
-            return false;
-        }
-
-        $this->redis->expireIn($key, $this->ttl);
-
-        return true;
-    }
-
-    /**
      * Every node's set key for a user on an app.
      *
      * @return list<string>

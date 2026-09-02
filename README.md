@@ -94,7 +94,7 @@ return [
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `connection` | `REDIS_*` env | Redis server; every node must point at the same server and database. |
+| `connection` | `REDIS_*` env | Redis server; every node must point at the same server and database. Takes Laravel's connection keys, `scheme` (`tcp`, `tls`/`rediss`, `unix`), `read_timeout` and the retry keys included. |
 | `key_prefix` | `cap` | Namespace for the per-user sets. |
 | `ttl` | `90` | Seconds each node's set lives; refreshed on every heartbeat. |
 | `heartbeat_interval` | `30.0` | Seconds between heartbeat ticks. |
