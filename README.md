@@ -114,7 +114,7 @@ return [
 ## Requirements
 
 - PHP 8.5+
-- Resonate 0.4+
+- Resonate 0.7+
 - A Redis server reachable from every Resonate node
 
 ## Testing
