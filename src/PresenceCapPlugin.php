@@ -138,7 +138,6 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
             new PresenceCapKeys($config['key_prefix'] ?? 'cap'),
             PresenceCapKeys::nodeId(),
             (int) ($config['ttl'] ?? 90),
-            (bool) ($config['legacy_keys'] ?? false),
         );
     }
 

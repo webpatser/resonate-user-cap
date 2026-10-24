@@ -65,18 +65,6 @@ class PresenceCapKeys
     }
 
     /**
-     * The SCAN pattern matching the untagged keys older releases wrote.
-     *
-     * Only read, never written: it lets a node count the connections an
-     * older node still holds during a rolling upgrade. Those keys expire by
-     * TTL once the last older node is gone.
-     */
-    public function legacyUserScanPattern(string $appId, string $userId): string
-    {
-        return $this->prefix.':'.$appId.':'.$this->encodeIdentity($userId).':*';
-    }
-
-    /**
      * The hash-tagged part every node's key for one user shares.
      */
     protected function userTag(string $appId, string $userId): string

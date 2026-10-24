@@ -96,7 +96,6 @@ class TestCase extends Testbench
                 'timeout' => 5,
             ],
             'key_prefix' => 'cap-test',
-            'legacy_keys' => true,
             'ttl' => 90,
             'heartbeat_interval' => 30.0,
             'default' => 2,

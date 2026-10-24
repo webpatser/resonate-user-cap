@@ -31,14 +31,13 @@ function flushCounterKeys(Client $redis): void
     }
 }
 
-function makeCounter(string $node = 'node-test', bool $legacyKeys = true): UserConnectionCounter
+function makeCounter(string $node = 'node-test'): UserConnectionCounter
 {
     return new UserConnectionCounter(
         createRedisClient(RedisConfig::fromUri('redis://127.0.0.1:6379/15')),
         new PresenceCapKeys('cap-test'),
         $node,
         90,
-        $legacyKeys,
     );
 }
 
@@ -262,7 +261,7 @@ it('only counts the nodes in the registry, never scanning for keys', function ()
     $count = null;
 
     runLoop(function () use (&$count) {
-        $counter = makeCounter('node-a', legacyKeys: false);
+        $counter = makeCounter('node-a');
         $counter->add('app-id', 'u-1', 'sock-1');
 
         $count = $counter->count('app-id', 'u-1');
@@ -315,37 +314,4 @@ it('re-registers a pruned node on the next heartbeat sync', function () {
     });
 
     expect($this->redis->smembers('cap-test:{app-id:u-1}:nodes'))->toBe(['node-a']);
-});
-
-it('counts the untagged keys an older node still writes during a rolling upgrade', function () {
-    // An older node, mid-upgrade, holds two of the user's connections.
-    $this->redis->sadd('cap-test:app-id:u-1:old-node', ['old-1', 'old-2']);
-
-    $allowed = $count = null;
-
-    runLoop(function () use (&$allowed, &$count) {
-        $counter = makeCounter('node-a');
-
-        $allowed = $counter->tryAdd('app-id', 'u-1', 'sock-1', 2);
-        $count = $counter->count('app-id', 'u-1');
-    });
-
-    expect($allowed)->toBeFalse()
-        ->and($count)->toBe(2);
-});
-
-it('ignores untagged keys once legacy key reading is off', function () {
-    $this->redis->sadd('cap-test:app-id:u-1:old-node', ['old-1', 'old-2']);
-
-    $allowed = $count = null;
-
-    runLoop(function () use (&$allowed, &$count) {
-        $counter = makeCounter('node-a', legacyKeys: false);
-
-        $allowed = $counter->tryAdd('app-id', 'u-1', 'sock-1', 2);
-        $count = $counter->count('app-id', 'u-1');
-    });
-
-    expect($allowed)->toBeTrue()
-        ->and($count)->toBe(1);
 });

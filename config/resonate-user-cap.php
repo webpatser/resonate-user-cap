@@ -41,18 +41,9 @@ return [
     | prefix must not contain "{" or "}". The TTL is refreshed on every
     | heartbeat so a dead node's entries expire on their own.
     |
-    | legacy_keys: also count the untagged "{prefix}:{app}:{user}:{node}" keys
-    |   that releases before the hash tag wrote, so upgraded nodes keep
-    |   counting the connections older nodes hold during a rolling upgrade.
-    |   Off by default: it costs one extra SCAN of the whole database per
-    |   presence subscribe. Turn it on for the rollout and off again once
-    |   every node is upgraded and one TTL has passed.
-    |
     */
 
     'key_prefix' => env('RESONATE_USER_CAP_PREFIX', 'cap'),
-
-    'legacy_keys' => (bool) env('RESONATE_USER_CAP_LEGACY_KEYS', false),
 
     'ttl' => (int) env('RESONATE_USER_CAP_TTL', 90),
 

@@ -41,17 +41,6 @@ it('keeps the hash tag stable when a user id carries a brace', function () {
         ->toBe(SlotHasher::slotFor($keys->userKey('app-id', 'u}7', 'web-2')));
 });
 
-it('builds the legacy scan pattern for keys older releases wrote', function () {
-    $keys = new PresenceCapKeys('cap');
-
-    $pattern = $keys->legacyUserScanPattern('app-id', 'u-7');
-
-    expect($pattern)->toBe('cap:app-id:u-7:*')
-        ->and(fnmatch($pattern, 'cap:app-id:u-7:web-1-9001'))->toBeTrue()
-        ->and(fnmatch($pattern, $keys->userKey('app-id', 'u-7', 'web-1-9001')))->toBeFalse()
-        ->and($keys->legacyUserScanPattern('app-id', 'u*'))->toBe('cap:app-id:u%2A:*');
-});
-
 it('honours a custom prefix', function () {
     $keys = new PresenceCapKeys('user-limit');
 
