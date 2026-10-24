@@ -519,18 +519,38 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
      */
     protected function makeClient(array $server): RedisClient
     {
+        $seeds = $this->clusterConfigs($server);
+
+        return $seeds === []
+            ? createRedisClient($this->makeConfig($server))
+            : createRedisClusterClient($seeds);
+    }
+
+    /**
+     * The cluster seeds as client configs, or none for a single-node client.
+     *
+     * Every "host:port" seed is the connection config (from `url` when set,
+     * else from the individual keys) pointed at that endpoint, so it carries
+     * the configured username, password, TLS and timeouts. The database is
+     * forced to 0, the only one Redis Cluster has.
+     *
+     * @param  array<string, mixed>  $server
+     * @return list<RedisConfig|string>
+     */
+    protected function clusterConfigs(array $server): array
+    {
         $seeds = $this->clusterSeeds($server['cluster'] ?? null);
 
         if ($seeds === []) {
-            return createRedisClient($this->makeConfig($server));
+            return [];
         }
 
-        $template = $this->makeConfig([...$server, 'url' => null])->withDatabase(0);
+        $template = $this->makeConfig($server)->withDatabase(0);
 
-        return createRedisClusterClient(array_map(
+        return array_map(
             fn (string $seed): RedisConfig|string => $this->clusterSeed($seed, $template),
             $seeds,
-        ));
+        );
     }
 
     /**
