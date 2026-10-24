@@ -10,17 +10,15 @@ it('builds a per-node user key', function () {
         ->toBe('cap:{app-id:u-7}:web-1-9001');
 });
 
-it('builds a scan pattern that matches every node for one user', function () {
+it('builds the node registry key for one user', function () {
     $keys = new PresenceCapKeys('cap');
 
-    $pattern = $keys->userScanPattern('app-id', 'u-7');
-
-    expect($pattern)->toBe('cap:{app-id:u-7}:*')
-        ->and(fnmatch($pattern, 'cap:{app-id:u-7}:web-1-9001'))->toBeTrue()
-        ->and(fnmatch($pattern, 'cap:{app-id:u-70}:web-1-9001'))->toBeFalse();
+    expect($keys->registryKey('app-id', 'u-7'))->toBe('cap:{app-id:u-7}:nodes')
+        ->and($keys->userKeyPrefix('app-id', 'u-7').'web-1-9001')
+        ->toBe($keys->userKey('app-id', 'u-7', 'web-1-9001'));
 });
 
-it('hashes every node key of one user to the same cluster slot', function () {
+it('hashes every node key and the registry of one user to the same cluster slot', function () {
     $keys = new PresenceCapKeys('cap');
 
     // The cap script reads all of these in one EVAL; on Redis Cluster that
@@ -29,6 +27,8 @@ it('hashes every node key of one user to the same cluster slot', function () {
         fn (string $node) => SlotHasher::slotFor($keys->userKey('app-id', 'u-7', $node)),
         ['web-1-9001', 'web-2-17', 'worker-3-4242', 'node'],
     );
+
+    $slots[] = SlotHasher::slotFor($keys->registryKey('app-id', 'u-7'));
 
     expect(array_unique($slots))->toHaveCount(1)
         ->and($slots[0])->toBe(SlotHasher::slotFor('{app-id:u-7}'));
@@ -48,7 +48,8 @@ it('builds the legacy scan pattern for keys older releases wrote', function () {
 
     expect($pattern)->toBe('cap:app-id:u-7:*')
         ->and(fnmatch($pattern, 'cap:app-id:u-7:web-1-9001'))->toBeTrue()
-        ->and(fnmatch($pattern, $keys->userKey('app-id', 'u-7', 'web-1-9001')))->toBeFalse();
+        ->and(fnmatch($pattern, $keys->userKey('app-id', 'u-7', 'web-1-9001')))->toBeFalse()
+        ->and($keys->legacyUserScanPattern('app-id', 'u*'))->toBe('cap:app-id:u%2A:*');
 });
 
 it('honours a custom prefix', function () {
@@ -72,17 +73,11 @@ it('encodes a colon in the user id so it cannot collide namespaces', function ()
         ->not->toBe($key);
 });
 
-it('encodes glob metacharacters so a scan pattern cannot be broadened', function () {
+it('encodes glob metacharacters in the user id', function () {
     $keys = new PresenceCapKeys('cap');
 
-    $pattern = $keys->userScanPattern('app-id', 'u*');
-
-    // The injected "*" is encoded; only the trailing node wildcard remains, so
-    // the pattern cannot match unrelated users like "u-7" or "u1".
-    expect($pattern)->toBe('cap:{app-id:u%2A}:*')
-        ->and(fnmatch($pattern, 'cap:{app-id:u-7}:node-1'))->toBeFalse()
-        ->and(fnmatch($pattern, 'cap:{app-id:u%2A}:node-1'))->toBeTrue()
-        ->and($keys->legacyUserScanPattern('app-id', 'u*'))->toBe('cap:app-id:u%2A:*');
+    expect($keys->registryKey('app-id', 'u*'))->toBe('cap:{app-id:u%2A}:nodes')
+        ->and($keys->userKey('app-id', 'u*', 'node-1'))->toBe('cap:{app-id:u%2A}:node-1');
 });
 
 it('encodes every reserved character injectively', function () {

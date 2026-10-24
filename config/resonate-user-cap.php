@@ -11,6 +11,12 @@ return [
     | cluster-wide count is correct and self-healing. Every node must point
     | at the same Redis server and database.
     |
+    | cluster: Redis Cluster seed nodes, comma separated ("10.0.0.1:7000,
+    |   10.0.0.2:7000") or as full URIs. When set, the plugin talks Redis
+    |   Cluster: the other masters are discovered from the seeds, which take
+    |   username, password and TLS (scheme "tls") from the settings below,
+    |   and the database is always 0. Leave empty for a single node.
+    |
     */
 
     'connection' => [
@@ -22,6 +28,7 @@ return [
         'password' => env('RESONATE_USER_CAP_REDIS_PASSWORD', env('REDIS_PASSWORD')),
         'database' => env('RESONATE_USER_CAP_REDIS_DB', env('REDIS_DB', '0')),
         'timeout' => env('RESONATE_USER_CAP_REDIS_TIMEOUT', 5),
+        'cluster' => env('RESONATE_USER_CAP_REDIS_CLUSTER_NODES'),
     ],
 
     /*

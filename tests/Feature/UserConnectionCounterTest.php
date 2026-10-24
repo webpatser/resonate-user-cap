@@ -229,10 +229,11 @@ it('syncing an empty socket list drops the key and reports the user gone', funct
     });
 
     expect($result)->toBeFalse()
-        ->and($this->redis->exists('cap-test:{app-id:u-1}:node-a'))->toBe(0);
+        ->and($this->redis->exists('cap-test:{app-id:u-1}:node-a'))->toBe(0)
+        ->and($this->redis->exists('cap-test:{app-id:u-1}:nodes'))->toBe(0);
 });
 
-it('writes every node key of one user under a shared cluster hash tag', function () {
+it('writes every node key and the registry of one user under a shared cluster hash tag', function () {
     runLoop(function () {
         makeCounter('node-a')->tryAdd('app-id', 'u-1', 'sock-1', 5);
         makeCounter('node-b')->tryAdd('app-id', 'u-1', 'sock-2', 5);
@@ -241,10 +242,79 @@ it('writes every node key of one user under a shared cluster hash tag', function
     $written = $this->redis->keys('cap-test:*');
     sort($written);
 
+    $registry = $this->redis->smembers('cap-test:{app-id:u-1}:nodes');
+    sort($registry);
+
     expect($written)->toBe([
         'cap-test:{app-id:u-1}:node-a',
         'cap-test:{app-id:u-1}:node-b',
-    ])->and(array_unique(array_map(SlotHasher::slotFor(...), $written)))->toHaveCount(1);
+        'cap-test:{app-id:u-1}:nodes',
+    ])->and(array_unique(array_map(SlotHasher::slotFor(...), $written)))->toHaveCount(1)
+        ->and($registry)->toBe(['node-a', 'node-b'])
+        ->and($this->redis->ttl('cap-test:{app-id:u-1}:nodes'))->toBeGreaterThan(0);
+});
+
+it('only counts the nodes in the registry, never scanning for keys', function () {
+    // A set no node registered (a pre-1.0 node during a rolling upgrade, say)
+    // is invisible: the count reads the registry, not a SCAN.
+    $this->redis->sadd('cap-test:{app-id:u-1}:unregistered', ['x-1', 'x-2']);
+
+    $count = null;
+
+    runLoop(function () use (&$count) {
+        $counter = makeCounter('node-a', legacyKeys: false);
+        $counter->add('app-id', 'u-1', 'sock-1');
+
+        $count = $counter->count('app-id', 'u-1');
+    });
+
+    expect($count)->toBe(1);
+});
+
+it('unregisters a node once its last socket is removed', function () {
+    runLoop(function () {
+        $a = makeCounter('node-a');
+        $b = makeCounter('node-b');
+
+        $a->add('app-id', 'u-1', 'sock-1');
+        $b->add('app-id', 'u-1', 'sock-2');
+        $a->remove('app-id', 'u-1', 'sock-1');
+    });
+
+    expect($this->redis->smembers('cap-test:{app-id:u-1}:nodes'))->toBe(['node-b']);
+});
+
+it('prunes a dead node whose set expired from the registry on the next cap check', function () {
+    $allowed = $count = null;
+
+    runLoop(function () use (&$allowed, &$count) {
+        makeCounter('node-dead')->add('app-id', 'u-1', 'sock-1');
+        makeCounter('node-dead')->add('app-id', 'u-1', 'sock-2');
+
+        // The dead node never cleans up; its set simply runs out of TTL.
+        $this->redis->del('cap-test:{app-id:u-1}:node-dead');
+
+        $counter = makeCounter('node-a');
+        $allowed = $counter->tryAdd('app-id', 'u-1', 'sock-3', 1);
+        $count = $counter->count('app-id', 'u-1');
+    });
+
+    expect($allowed)->toBeTrue()
+        ->and($count)->toBe(1)
+        ->and($this->redis->smembers('cap-test:{app-id:u-1}:nodes'))->toBe(['node-a']);
+});
+
+it('re-registers a pruned node on the next heartbeat sync', function () {
+    runLoop(function () {
+        $counter = makeCounter('node-a');
+        $counter->add('app-id', 'u-1', 'sock-1');
+
+        $this->redis->del('cap-test:{app-id:u-1}:nodes');
+
+        $counter->sync('app-id', 'u-1', ['sock-1']);
+    });
+
+    expect($this->redis->smembers('cap-test:{app-id:u-1}:nodes'))->toBe(['node-a']);
 });
 
 it('counts the untagged keys an older node still writes during a rolling upgrade', function () {

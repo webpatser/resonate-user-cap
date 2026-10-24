@@ -51,3 +51,43 @@ jobs:
 
       - name: Run tests
         run: ./vendor/bin/pest
+
+  cluster:
+    runs-on: ubuntu-latest
+    name: Redis Cluster
+
+    # The counter's scripts reach every node's set of a user from one EVAL;
+    # this job runs them against a real three-master cluster.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          coverage: none
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --no-progress --no-interaction --prefer-dist
+
+      - name: Start Redis cluster
+        run: |
+          docker run -d --name redis-cluster \
+            -e IP=0.0.0.0 -e INITIAL_PORT=17000 -e MASTERS=3 -e SLAVES_PER_MASTER=1 \
+            -p 17000-17005:17000-17005 -p 27000-27005:27000-27005 \
+            grokzen/redis-cluster:7.0.10
+          timeout 120 sh -c '
+            for port in 17000 17001 17002 17003 17004 17005; do
+              until docker exec redis-cluster redis-cli -p $port cluster info 2>/dev/null | grep -q "cluster_state:ok"; do
+                sleep 2
+              done
+              echo "node :$port ready"
+            done
+          '
+
+      - name: Run cluster tests
+        env:
+          RESONATE_USER_CAP_TEST_CLUSTER_NODES: 127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002
+        run: ./vendor/bin/pest tests/Integration/ClusterTest.php

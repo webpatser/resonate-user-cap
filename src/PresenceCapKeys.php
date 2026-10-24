@@ -12,15 +12,17 @@ use RuntimeException;
  * keys mean a dead node's count expires by TTL without a live node holding
  * it open, exactly the pattern resonate-roster uses.
  *
- * The inner braces are a Redis Cluster hash tag. Cluster hashes only what sits
- * between the first "{" and the next "}", so every node's key for one user
- * lands in the same slot and the cap script, which reads all of them in one
- * EVAL, cannot fail with CROSSSLOT. A "}" inside a user id only ends the tag
- * early; the tag is still identical for every node's key of that user.
+ * Which nodes hold a set for a user is recorded in a registry set,
+ * "{prefix}:{{appId}:{userId}}:nodes", so the count never has to SCAN for the
+ * per-node keys. SCAN only walks the node it is sent to, so on a Redis Cluster
+ * it silently missed every key that lived elsewhere.
  *
- * Keys written before the tag existed ("{prefix}:{appId}:{userId}:{nodeId}")
- * are still matched by {@see legacyUserScanPattern()}, so a rolling upgrade
- * keeps counting the connections that older nodes hold.
+ * The inner braces are a Redis Cluster hash tag. Cluster hashes only what sits
+ * between the first "{" and the next "}", so every node's key for one user and
+ * that user's registry land in the same slot, and the cap script, which reads
+ * all of them in one EVAL, cannot fail with CROSSSLOT. A "}" inside a user id
+ * only ends the tag early; the tag is still identical for every key of that
+ * user.
  */
 class PresenceCapKeys
 {
@@ -37,17 +39,29 @@ class PresenceCapKeys
      */
     public function userKey(string $appId, string $userId, string $node): string
     {
-        return $this->userTag($appId, $userId).':'.$node;
+        return $this->userKeyPrefix($appId, $userId).$node;
     }
 
     /**
-     * The SCAN pattern matching every node's key for one user on one app.
+     * Everything of a node's set key but the node id itself.
      *
-     * Braces are literal in a Redis glob, so the tag needs no escaping here.
+     * The cap script appends the node ids it reads from the registry to this,
+     * so it can reach every node's set without the caller listing them.
      */
-    public function userScanPattern(string $appId, string $userId): string
+    public function userKeyPrefix(string $appId, string $userId): string
     {
-        return $this->userTag($appId, $userId).':*';
+        return $this->userTag($appId, $userId).':';
+    }
+
+    /**
+     * The set key listing the nodes that hold a set for one user on one app.
+     *
+     * Node ids from {@see nodeId()} always end in "-{pid}", so no node's own
+     * set key can collide with this one.
+     */
+    public function registryKey(string $appId, string $userId): string
+    {
+        return $this->userTag($appId, $userId).':nodes';
     }
 
     /**
@@ -75,10 +89,10 @@ class PresenceCapKeys
      *
      * The `user_id` arrives from presence `channel_data`, which is only weakly
      * constrained, so a value may carry a `:` (colliding key namespaces) or a
-     * glob metacharacter (`* ? [ ] \`) that would broaden a SCAN MATCH pattern.
-     * Each unsafe byte, plus `%` itself, is percent-encoded so the mapping stays
-     * injective: distinct ids always yield distinct, glob-safe segments. Safe
-     * ids such as "u-7" pass through unchanged.
+     * glob metacharacter (`* ? [ ] \`) that would broaden any pattern built
+     * from the key. Each unsafe byte, plus `%` itself, is percent-encoded so the
+     * mapping stays injective: distinct ids always yield distinct, glob-safe
+     * segments. Safe ids such as "u-7" pass through unchanged.
      *
      * @throws RuntimeException when the identity could not be encoded, so a
      *                          key is never built from an unsanitised segment.

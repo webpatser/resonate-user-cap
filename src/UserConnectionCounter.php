@@ -6,27 +6,42 @@ use Fledge\Async\Redis\Connection\RedisConnectionException;
 use Fledge\Async\Redis\RedisClient;
 use Throwable;
 
+use function Fledge\Async\async;
+use function Fledge\Async\Future\await;
+
 /**
  * Cluster-wide count of a user's connections, backed by per-node Redis sets.
  *
- * Add/remove operate on the local node's set; the count unions every node's
- * set via SCAN + SCARD. A check-then-add against the union may occasionally
- * race two nodes into a one-over overshoot, which the next check corrects;
- * an under-cap is impossible because the union is monotone in adds.
+ * Each node keeps its own set of socket ids per user, and every node holding
+ * one is listed in the user's registry set. The count is the sum of the sizes
+ * of the registered nodes' sets. All of a user's keys share one hash tag, so
+ * every script below touches a single slot and runs unchanged on a Redis
+ * Cluster. Nothing here SCANs: SCAN only walks the node it is sent to, so on
+ * a Cluster it missed every key that lived on another master.
+ *
+ * A node registers after its set is written and unregisters only once its set
+ * is empty, and a registered node whose set has expired (a node that died
+ * without cleaning up) is pruned by the next cap check that reads it.
  */
 class UserConnectionCounter
 {
     /**
-     * Atomically count the union and conditionally SADD this node's socket.
+     * Atomically count the user's connections and conditionally SADD a socket.
      *
-     * KEYS[1] is this node's set (always the write target and always counted);
-     * KEYS[2..n] are the other nodes' sets gathered by the caller. All of them
-     * share one hash tag, so the script also runs on Redis Cluster. The script
-     * runs as one indivisible step, so concurrent subscribes for the same user
-     * are serialised by Redis: every caller re-reads the live count before its
-     * own add, which closes the check-then-add race that overshot the cap.
+     * KEYS[1] is this node's set (the write target), KEYS[2] the user's node
+     * registry. The other nodes' sets are reached through the registry
+     * (ARGV[5] is the key prefix the node ids are appended to). Those keys are
+     * not declared, which Redis Cluster allows because they share the hash tag
+     * of the declared keys and so live in the same slot.
      *
-     * ARGV[4] is the count the caller read from untagged keys older nodes
+     * A registered node whose set no longer exists has died without cleaning
+     * up and its TTL ran out, so it is pruned from the registry on the way.
+     *
+     * The script runs as one indivisible step, so concurrent subscribes for
+     * the same user are serialised by Redis: every caller re-reads the live
+     * count before its own add, which closes the check-then-add race.
+     *
+     * ARGV[6] is the count the caller read from untagged keys older nodes
      * still write during a rolling upgrade. Those live in other slots, so they
      * are counted outside the script and only added in here.
      *
@@ -35,17 +50,36 @@ class UserConnectionCounter
      */
     private const string ADD_IF_UNDER_CAP = <<<'LUA'
     local target = KEYS[1]
+    local registry = KEYS[2]
     local socket = ARGV[2]
+    local ttl = tonumber(ARGV[3])
+    local node = ARGV[4]
+
+    local function register()
+        redis.call('SADD', registry, node)
+        redis.call('EXPIRE', target, ttl)
+        redis.call('EXPIRE', registry, ttl)
+    end
 
     if redis.call('SISMEMBER', target, socket) == 1 then
+        register()
+
         return 1
     end
 
     local cap = tonumber(ARGV[1])
-    local total = tonumber(ARGV[4]) or 0
+    local total = (tonumber(ARGV[6]) or 0) + redis.call('SCARD', target)
 
-    for i = 1, #KEYS do
-        total = total + redis.call('SCARD', KEYS[i])
+    for _, member in ipairs(redis.call('SMEMBERS', registry)) do
+        if member ~= node then
+            local size = redis.call('SCARD', ARGV[5] .. member)
+
+            if size == 0 then
+                redis.call('SREM', registry, member)
+            else
+                total = total + size
+            end
+        end
     end
 
     if cap > 0 and total >= cap then
@@ -53,7 +87,65 @@ class UserConnectionCounter
     end
 
     redis.call('SADD', target, socket)
-    redis.call('EXPIRE', target, tonumber(ARGV[3]))
+    register()
+
+    return 1
+    LUA;
+
+    /**
+     * Add a socket to this node's set and register the node.
+     *
+     * KEYS[1] is this node's set, KEYS[2] the registry. ARGV is socket, node,
+     * TTL. Returns the SADD result: 1 when the socket was new.
+     */
+    private const string ADD = <<<'LUA'
+    local added = redis.call('SADD', KEYS[1], ARGV[1])
+
+    redis.call('SADD', KEYS[2], ARGV[2])
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+    redis.call('EXPIRE', KEYS[2], tonumber(ARGV[3]))
+
+    return added
+    LUA;
+
+    /**
+     * Remove a socket and unregister the node once its set is empty.
+     *
+     * One script, so an add for the same user cannot land between the size
+     * check and the unregister and be left uncounted. Redis drops the set with
+     * its last member, so no DEL is needed. ARGV is socket, node.
+     */
+    private const string REMOVE = <<<'LUA'
+    redis.call('SREM', KEYS[1], ARGV[1])
+
+    if redis.call('SCARD', KEYS[1]) == 0 then
+        redis.call('SREM', KEYS[2], ARGV[2])
+    end
+
+    return 1
+    LUA;
+
+    /**
+     * Replace this node's set with exactly the given sockets.
+     *
+     * ARGV is node, TTL, then the socket ids. With no sockets the set is
+     * dropped and the node unregistered; otherwise the set is rebuilt and the
+     * node registered, all in one step so no reader sees it half-written.
+     * Returns 1 while sockets remain, 0 once the set is gone.
+     */
+    private const string SYNC = <<<'LUA'
+    redis.call('DEL', KEYS[1])
+
+    if #ARGV < 3 then
+        redis.call('SREM', KEYS[2], ARGV[1])
+
+        return 0
+    end
+
+    redis.call('SADD', KEYS[1], unpack(ARGV, 3))
+    redis.call('SADD', KEYS[2], ARGV[1])
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+    redis.call('EXPIRE', KEYS[2], tonumber(ARGV[2]))
 
     return 1
     LUA;
@@ -76,45 +168,43 @@ class UserConnectionCounter
 
     /**
      * The cluster-wide connection count for a user on an app.
+     *
+     * Reads the registry, then every registered node's set size. The SCARDs
+     * are issued together rather than one round trip after another.
      */
     public function count(string $appId, string $userId): int
     {
-        $total = $this->legacyCount($appId, $userId);
+        $prefix = $this->keys->userKeyPrefix($appId, $userId);
 
-        foreach ($this->nodeKeys($appId, $userId) as $key) {
-            $total += $this->redis->getSet($key)->getSize();
-        }
+        $sizes = await(array_map(
+            fn (string $node) => async(fn (): int => $this->redis->getSet($prefix.$node)->getSize()),
+            $this->redis->getSet($this->keys->registryKey($appId, $userId))->getAll(),
+        ));
 
-        return $total;
+        return array_sum($sizes) + $this->legacyCount($appId, $userId);
     }
 
     /**
      * Atomically add a socket only while the user is under the cap.
      *
-     * Gathers every node's set for the user (the local node's key is always
-     * included as the write target) and hands them to a Lua script that counts
-     * and conditionally adds in a single, indivisible Redis call. A cap of 0
-     * disables the limit, so the add always succeeds.
+     * A cap of 0 disables the limit, so the add always succeeds.
      *
      * Returns true when the socket is counted, false when the cap is reached
      * and the connection must be rejected.
      */
     public function tryAdd(string $appId, string $userId, string $socketId, int $cap): bool
     {
-        $target = $this->keys->userKey($appId, $userId, $this->node);
-
-        $keys = [$target];
-
-        foreach ($this->nodeKeys($appId, $userId) as $key) {
-            if ($key !== $target) {
-                $keys[] = $key;
-            }
-        }
-
         $allowed = $this->redis->eval(
             self::ADD_IF_UNDER_CAP,
-            $keys,
-            [$cap, $socketId, $this->ttl, $this->legacyCount($appId, $userId)],
+            $this->keysFor($appId, $userId),
+            [
+                $cap,
+                $socketId,
+                $this->ttl,
+                $this->node,
+                $this->keys->userKeyPrefix($appId, $userId),
+                $this->legacyCount($appId, $userId),
+            ],
         );
 
         return (int) $allowed === 1;
@@ -128,27 +218,29 @@ class UserConnectionCounter
      */
     public function add(string $appId, string $userId, string $socketId): bool
     {
-        $key = $this->keys->userKey($appId, $userId, $this->node);
+        $added = $this->redis->eval(
+            self::ADD,
+            $this->keysFor($appId, $userId),
+            [$socketId, $this->node, $this->ttl],
+        );
 
-        $added = $this->redis->getSet($key)->add($socketId) > 0;
-
-        $this->redis->expireIn($key, $this->ttl);
-
-        return $added;
+        return (int) $added > 0;
     }
 
     /**
      * Remove a socket from this node's set.
      *
-     * A single SREM, with no follow-up delete. The old read-then-delete
-     * (SREM, SCARD, DEL) had a window between the size check and the delete:
-     * an add that landed in it was erased along with the key, silently
-     * uncounting a live connection. The delete was never needed anyway,
-     * because Redis drops a set as soon as its last member is removed.
+     * A single script with no read-then-delete: the old SREM, SCARD, DEL had
+     * a window between the size check and the delete in which an add was
+     * erased along with the key, silently uncounting a live connection.
      */
     public function remove(string $appId, string $userId, string $socketId): void
     {
-        $this->redis->getSet($this->keys->userKey($appId, $userId, $this->node))->remove($socketId);
+        $this->redis->eval(
+            self::REMOVE,
+            $this->keysFor($appId, $userId),
+            [$socketId, $this->node],
+        );
     }
 
     /**
@@ -160,7 +252,8 @@ class UserConnectionCounter
      * swallowed by the plugin manager), and a lost decrement used to leave a
      * stale socket id whose TTL the heartbeat then refreshed forever, holding
      * a cap slot until the node restarted. Rebuilding from the live set is
-     * what makes those ghosts self-healing.
+     * what makes those ghosts self-healing. It also re-registers the node,
+     * so a registry entry another node pruned is restored.
      *
      * Returns true while the user still has sockets on this node, false once
      * the list is empty and the key has been dropped.
@@ -169,48 +262,26 @@ class UserConnectionCounter
      */
     public function sync(string $appId, string $userId, array $socketIds): bool
     {
-        $key = $this->keys->userKey($appId, $userId, $this->node);
+        $kept = $this->redis->eval(
+            self::SYNC,
+            $this->keysFor($appId, $userId),
+            [$this->node, $this->ttl, ...array_values(array_unique($socketIds))],
+        );
 
-        if ($socketIds === []) {
-            $this->redis->delete($key);
-
-            return false;
-        }
-
-        $set = $this->redis->getSet($key);
-        $current = $set->getAll();
-
-        $stale = array_values(array_diff($current, $socketIds));
-
-        if ($stale !== []) {
-            $set->remove(...$stale);
-        }
-
-        $missing = array_values(array_diff($socketIds, $current));
-
-        if ($missing !== []) {
-            $set->add(...$missing);
-        }
-
-        $this->redis->expireIn($key, $this->ttl);
-
-        return true;
+        return (int) $kept === 1;
     }
 
     /**
-     * Every node's set key for a user on an app.
+     * This node's set key and the user's registry key, in script order.
      *
      * @return list<string>
      */
-    protected function nodeKeys(string $appId, string $userId): array
+    protected function keysFor(string $appId, string $userId): array
     {
-        $keys = [];
-
-        foreach ($this->redis->scan($this->keys->userScanPattern($appId, $userId), 100) as $key) {
-            $keys[] = $key;
-        }
-
-        return $keys;
+        return [
+            $this->keys->userKey($appId, $userId, $this->node),
+            $this->keys->registryKey($appId, $userId),
+        ];
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace Webpatser\ResonateUserCap;
 
+use Fledge\Async\Redis\RedisClient;
 use Fledge\Async\Redis\RedisConfig;
 use Illuminate\Support\Str;
 use JsonException;
@@ -18,6 +19,7 @@ use Webpatser\Resonate\Protocols\Pusher\Channels\Channel;
 use Webpatser\ResonateUserCap\Events\UserCapExceeded;
 
 use function Fledge\Async\Redis\createRedisClient;
+use function Fledge\Async\Redis\createRedisClusterClient;
 
 /**
  * Caps the cluster-wide connection count per presence user_id.
@@ -132,7 +134,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
         $this->failOpen = (bool) ($config['fail_open'] ?? false);
 
         $this->counter = new UserConnectionCounter(
-            createRedisClient($this->makeConfig($config['connection'] ?? [])),
+            $this->makeClient($config['connection'] ?? []),
             new PresenceCapKeys($config['key_prefix'] ?? 'cap'),
             PresenceCapKeys::nodeId(),
             (int) ($config['ttl'] ?? 90),
@@ -502,6 +504,76 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
     protected function isPresenceChannel(Channel $channel): bool
     {
         return str_starts_with($channel->name(), 'presence-');
+    }
+
+    /**
+     * Open the Redis client the counter talks to.
+     *
+     * With `cluster` seeds configured ("host:port" entries, or full URIs) the
+     * client speaks Redis Cluster: it discovers the other masters from the
+     * seeds and routes each command to the master owning its slot. A plain
+     * "host:port" seed takes its auth and TLS settings from the rest of the
+     * connection config, and so do the masters discovered from it. Without
+     * seeds it is a single-node client, as before.
+     *
+     * @param  array<string, mixed>  $server
+     */
+    protected function makeClient(array $server): RedisClient
+    {
+        $seeds = $this->clusterSeeds($server['cluster'] ?? null);
+
+        if ($seeds === []) {
+            return createRedisClient($this->makeConfig($server));
+        }
+
+        $template = $this->makeConfig([...$server, 'url' => null])->withDatabase(0);
+
+        return createRedisClusterClient(array_map(
+            fn (string $seed): RedisConfig|string => $this->clusterSeed($seed, $template),
+            $seeds,
+        ));
+    }
+
+    /**
+     * The configured cluster seeds, from a list or a comma-separated string.
+     *
+     * @return list<string>
+     */
+    protected function clusterSeeds(mixed $cluster): array
+    {
+        if (is_string($cluster)) {
+            $cluster = explode(',', $cluster);
+        }
+
+        if (! is_array($cluster)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map(static fn (mixed $seed): string => is_scalar($seed) ? trim((string) $seed) : '', $cluster),
+            static fn (string $seed): bool => $seed !== '',
+        ));
+    }
+
+    /**
+     * One cluster seed: a URI passes through, "host:port" inherits the template.
+     */
+    protected function clusterSeed(string $seed, RedisConfig $template): RedisConfig|string
+    {
+        if (str_contains($seed, '://')) {
+            return $seed;
+        }
+
+        $separator = strrpos($seed, ':');
+
+        if ($separator === false) {
+            return $template->withEndpoint($seed, RedisConfig::DEFAULT_PORT);
+        }
+
+        return $template->withEndpoint(
+            trim(substr($seed, 0, $separator), '[]'),
+            (int) substr($seed, $separator + 1),
+        );
     }
 
     /**
