@@ -34,7 +34,7 @@ RESONATE_USER_CAP_REDIS_CLUSTER_NODES=10.0.0.1:7000,10.0.0.2:7000,10.0.0.3:7000
 RESONATE_USER_CAP_REDIS_PASSWORD=secret
 ```
 
-The client discovers the other masters from the seeds and routes each command to the master that owns its slot. `host:port` seeds, and the masters discovered from them, take `username`, `password` and TLS (`scheme` `tls`/`rediss`) from the rest of the `connection` config; a seed may also be a full URI (`rediss://user:pass@10.0.0.1:7000`). Cluster always uses database 0, whatever `database` says. Leave the variable empty for a single Redis server.
+The client discovers the other masters from the seeds and routes each command to the master that owns its slot. `host:port` seeds, and the masters discovered from them, take `username`, `password` and TLS (`scheme` `tls`/`rediss`) from the rest of the `connection` config, or from its `url` when one is set; a seed may also be a full URI (`rediss://user:pass@10.0.0.1:7000`). Cluster always uses database 0, whatever `database` says. Leave the variable empty for a single Redis server.
 
 ### Rejected before the subscription happens
 

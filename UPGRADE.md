@@ -11,7 +11,12 @@
 
 1.0 no longer discovers the per-node sets with `SCAN`. Each node now registers itself in a per-user registry set, `{prefix}:{{app}:{user}}:nodes`, and the count reads only the registered nodes' sets. The per-node set keys themselves are unchanged.
 
-0.7 nodes never write the registry, so **a mixed 0.7/1.0 rollout under-counts**: a 1.0 node does not see the connections a 0.7 node holds, and a 0.7 node does not see the connections a 1.0 node holds, until every node runs 1.0. Users can briefly exceed the cap during the rollout; the count is exact again as soon as the last 0.7 node is gone. If that window matters, upgrade every node at once rather than one at a time.
+0.7 nodes never write the registry, so **a mixed 0.7/1.0 rollout miscounts** until every node runs 1.0:
+
+- A 1.0 node does not see the connections a 0.7 node holds, so it under-counts and users can briefly exceed the cap.
+- A 0.7 node still finds every node's set with `SCAN`, but its pattern also matches the registry key, so it adds the number of registered 1.0 nodes to the count and can refuse a user slightly early.
+
+The count is exact again as soon as the last 0.7 node is gone. If that window matters, upgrade every node at once rather than one at a time.
 
 There is nothing to migrate: 1.0 nodes register on their first subscribe or heartbeat, and the sets 0.7 nodes left behind expire by `ttl`.
 

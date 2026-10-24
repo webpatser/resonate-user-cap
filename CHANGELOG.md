@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Redis Cluster support. Set `connection.cluster` (`RESONATE_USER_CAP_REDIS_CLUSTER_NODES`) to a comma-separated list of seed nodes and the plugin talks Redis Cluster through fledge-fiber's `createRedisClusterClient()`. Seeds given as `host:port`, and the masters discovered from them, take auth and TLS from the rest of the connection config.
-- A per-user node registry, `{prefix}:{{app}:{user}}:nodes`, under the same hash tag as the node sets. The cap script reads the registry and every registered node's set in one `EVAL`, and prunes nodes whose set has expired. `count()` reads the registry and the set sizes concurrently.
+- Redis Cluster support. Set `connection.cluster` (`RESONATE_USER_CAP_REDIS_CLUSTER_NODES`) to a comma-separated list of seed nodes and the plugin talks Redis Cluster through fledge-fiber's `createRedisClusterClient()`. Seeds given as `host:port`, and the masters discovered from them, take auth and TLS from the rest of the connection config (from `url` when set).
+- A per-user node registry, `{prefix}:{{app}:{user}}:nodes`, under the same hash tag as the node sets. The cap script reads the registry and every registered node's set in one `EVAL`, and prunes nodes whose set has expired. Every node set it reads is declared in `KEYS`, so slot migrations redirect it rather than reading an already moved set as empty; a node that registers between the registry read and the script makes the check retry, and a registry that keeps changing fails like any other counter error (closed unless `fail_open`). `count()` reads the registry and the set sizes concurrently.
 
 ### Changed
 
@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
-- A mixed 0.7/1.0 rollout under-counts until every node runs 1.0: 1.0 nodes count only registered nodes, and 0.7 nodes never register. See [UPGRADE.md](UPGRADE.md).
+- A mixed 0.7/1.0 rollout miscounts until every node runs 1.0: 1.0 nodes count only registered nodes and 0.7 nodes never register (under-count), while 0.7 nodes also count the registry key their `SCAN` matches (slight over-count). See [UPGRADE.md](UPGRADE.md).
 
 ## [0.7.2] - 2026-10-24
 
