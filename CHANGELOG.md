@@ -5,6 +5,27 @@ All notable changes to `webpatser/resonate-user-cap` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-24
+
+### Added
+
+- Redis Cluster support. Set `connection.cluster` (`RESONATE_USER_CAP_REDIS_CLUSTER_NODES`) to a comma-separated list of seed nodes and the plugin talks Redis Cluster through fledge-fiber's `createRedisClusterClient()`. Seeds given as `host:port`, and the masters discovered from them, take auth and TLS from the rest of the connection config.
+- A per-user node registry, `{prefix}:{{app}:{user}}:nodes`, under the same hash tag as the node sets. The cap script reads the registry and every registered node's set in one `EVAL`, and prunes nodes whose set has expired. `count()` reads the registry and the set sizes concurrently.
+
+### Changed
+
+- Require `webpatser/resonate` `^1.0` and `webpatser/fledge-fiber` `^13.38.0.3`.
+- `add`, `remove` and the heartbeat `sync` each run as one script that also registers or unregisters the node.
+
+### Removed
+
+- `legacy_keys` (`RESONATE_USER_CAP_LEGACY_KEYS`) and the legacy `SCAN` fallback for the untagged keys releases before 0.7.2 wrote. Nothing in the plugin uses `SCAN` any more; it only walked one master on a Cluster.
+- The `legacyKeys` argument of the `UserConnectionCounter` constructor.
+
+### Breaking
+
+- A mixed 0.7/1.0 rollout under-counts until every node runs 1.0: 1.0 nodes count only registered nodes, and 0.7 nodes never register. See [UPGRADE.md](UPGRADE.md).
+
 ## [0.7.2] - 2026-10-24
 
 ### Security
@@ -19,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Per-node keys now carry a Redis Cluster hash tag: `{prefix}:{{app}:{user}}:{node}` (was `{prefix}:{app}:{user}:{node}`). Every key the cap script reads for one user shares a slot, so the script no longer fails with `CROSSSLOT` on Cluster. `key_prefix` must not contain `{` or `}`. Keys in the old format are only read (see `legacy_keys`) and expire by TTL.
+
+## [0.7.1] - 2026-10-22
+
+### Changed
+
+- Require `webpatser/fledge-fiber` `^13.38` (was `^13.29`).
 
 ## [0.7.0] - 2026-09-23
 
@@ -161,7 +188,13 @@ Initial release.
 - `UserCapServiceProvider`: merges config and publishes it via
   `vendor:publish --tag=resonate-user-cap-config`.
 
-[Unreleased]: https://github.com/webpatser/resonate-user-cap/compare/v0.3.0...HEAD
+[1.0.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.2...v1.0.0
+[0.7.2]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.4.1...v0.7.0
+[0.4.1]: https://github.com/webpatser/resonate-user-cap/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/webpatser/resonate-user-cap/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/webpatser/resonate-user-cap/compare/v0.2.1...v0.2.2

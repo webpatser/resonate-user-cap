@@ -18,9 +18,23 @@ For each `(app_id, user_id)`, the plugin keeps a per-node Redis set of the socke
 
 ```
 {prefix}:{{app}:{user}}:{node}    SET<socket_id>    (TTL refreshed by heartbeat)
+{prefix}:{{app}:{user}}:nodes     SET<node>         (registry of the nodes above)
 ```
 
-A user's cluster-wide count is the union of every node's set: `SCAN {prefix}:{{app}:{user}}:*` then `SCARD` each. The inner braces are a Redis Cluster hash tag, so every node's set for one user lives in the same slot and the atomic cap script can read them all in one `EVAL`. This is the same self-healing pattern as `webpatser/resonate-roster`: a dead node's set expires on its own, and a live node never holds a dead node's count open.
+A user's cluster-wide count is the sum of the registered nodes' sets: `SMEMBERS` the registry, then `SCARD` each node's set. A node registers when it writes its set and unregisters once the set is empty, so nothing ever has to `SCAN` for keys. The inner braces are a Redis Cluster hash tag, so every key of one user lives in the same slot and the atomic cap script can read them all in one `EVAL`.
+
+This is the same self-healing pattern as `webpatser/resonate-roster`: a dead node's set expires on its own, and the next cap check that finds a registered node without a set prunes it from the registry. A live node never holds a dead node's count open.
+
+### Redis Cluster
+
+Point the plugin at a Redis Cluster by listing seed nodes:
+
+```env
+RESONATE_USER_CAP_REDIS_CLUSTER_NODES=10.0.0.1:7000,10.0.0.2:7000,10.0.0.3:7000
+RESONATE_USER_CAP_REDIS_PASSWORD=secret
+```
+
+The client discovers the other masters from the seeds and routes each command to the master that owns its slot. `host:port` seeds, and the masters discovered from them, take `username`, `password` and TLS (`scheme` `tls`/`rediss`) from the rest of the `connection` config; a seed may also be a full URI (`rediss://user:pass@10.0.0.1:7000`). Cluster always uses database 0, whatever `database` says. Leave the variable empty for a single Redis server.
 
 ### Rejected before the subscription happens
 
@@ -79,7 +93,6 @@ Restart Resonate (`php artisan resonate:start`, or `resonate:reload` for a zero-
 return [
     'connection' => [ /* Redis */ ],
     'key_prefix' => 'cap',
-    'legacy_keys' => false,
     'ttl' => 90,
     'heartbeat_interval' => 30.0,
 
@@ -98,8 +111,8 @@ return [
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `connection` | `REDIS_*` env | Redis server; every node must point at the same server and database. Takes Laravel's connection keys, `scheme` (`tcp`, `tls`/`rediss`, `unix`), `read_timeout` and the retry keys included. |
+| `connection.cluster` | `RESONATE_USER_CAP_REDIS_CLUSTER_NODES` | Comma-separated Redis Cluster seeds (`host:port` or URIs). Empty means a single server. See [Redis Cluster](#redis-cluster). |
 | `key_prefix` | `cap` | Namespace for the per-user sets. Must not contain `{` or `}`. |
-| `legacy_keys` | `false` | Also count the untagged `{prefix}:{app}:{user}:{node}` keys releases before the hash tag wrote, so upgraded nodes keep counting older nodes' connections during a rolling upgrade. Costs one extra `SCAN` of the whole database per presence subscribe, so enable it only for the rollout and turn it off once every node is upgraded and one `ttl` has passed. |
 | `ttl` | `90` | Seconds each node's set lives; refreshed on every heartbeat. |
 | `heartbeat_interval` | `30.0` | Seconds between heartbeat ticks. |
 | `default` | `5` | Default cluster-wide cap per user. `0` disables capping. |
@@ -120,8 +133,10 @@ return [
 ## Requirements
 
 - PHP 8.5+
-- Resonate 0.7+
-- A Redis server reachable from every Resonate node
+- Resonate 1.0+
+- A Redis server (or a Redis Cluster) reachable from every Resonate node
+
+Upgrading from 0.7? See [UPGRADE.md](UPGRADE.md).
 
 ## Testing
 
@@ -130,6 +145,16 @@ composer test
 ```
 
 Tests that touch Redis expect a server on `127.0.0.1:6379` and use database 15; they skip cleanly when no Redis is reachable.
+
+The Redis Cluster tests run only when `RESONATE_USER_CAP_TEST_CLUSTER_NODES` names a three-master cluster:
+
+```bash
+docker run -d --name redis-cluster -e IP=0.0.0.0 -e INITIAL_PORT=17000 \
+  -e MASTERS=3 -e SLAVES_PER_MASTER=1 -p 17000-17005:17000-17005 grokzen/redis-cluster:7.0.10
+
+RESONATE_USER_CAP_TEST_CLUSTER_NODES=127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002 \
+  vendor/bin/pest tests/Integration/ClusterTest.php
+```
 
 ## License
 
