@@ -1,5 +1,6 @@
 <?php
 
+use Fledge\Async\Redis\Cluster\SlotHasher;
 use Fledge\Async\Redis\RedisConfig;
 use Predis\Client;
 use Webpatser\ResonateUserCap\PresenceCapKeys;
@@ -30,13 +31,14 @@ function flushCounterKeys(Client $redis): void
     }
 }
 
-function makeCounter(string $node = 'node-test'): UserConnectionCounter
+function makeCounter(string $node = 'node-test', bool $legacyKeys = true): UserConnectionCounter
 {
     return new UserConnectionCounter(
         createRedisClient(RedisConfig::fromUri('redis://127.0.0.1:6379/15')),
         new PresenceCapKeys('cap-test'),
         $node,
         90,
+        $legacyKeys,
     );
 }
 
@@ -174,7 +176,7 @@ it('removes the last socket without issuing a delete', function () {
     }
 
     expect((string) $stats)->not->toContain('cmdstat_del')
-        ->and($this->redis->exists('cap-test:app-id:u-1:node-a'))->toBe(0);
+        ->and($this->redis->exists('cap-test:{app-id:u-1}:node-a'))->toBe(0);
 });
 
 it('does not erase a socket added while the last one is being removed', function () {
@@ -208,12 +210,12 @@ it('syncs a node set to exactly the sockets it is given', function () {
         $result = $counter->sync('app-id', 'u-1', ['sock-1', 'sock-2']);
     });
 
-    $members = $this->redis->smembers('cap-test:app-id:u-1:node-a');
+    $members = $this->redis->smembers('cap-test:{app-id:u-1}:node-a');
     sort($members);
 
     expect($result)->toBeTrue()
         ->and($members)->toBe(['sock-1', 'sock-2'])
-        ->and($this->redis->ttl('cap-test:app-id:u-1:node-a'))->toBeGreaterThan(0);
+        ->and($this->redis->ttl('cap-test:{app-id:u-1}:node-a'))->toBeGreaterThan(0);
 });
 
 it('syncing an empty socket list drops the key and reports the user gone', function () {
@@ -227,5 +229,53 @@ it('syncing an empty socket list drops the key and reports the user gone', funct
     });
 
     expect($result)->toBeFalse()
-        ->and($this->redis->exists('cap-test:app-id:u-1:node-a'))->toBe(0);
+        ->and($this->redis->exists('cap-test:{app-id:u-1}:node-a'))->toBe(0);
+});
+
+it('writes every node key of one user under a shared cluster hash tag', function () {
+    runLoop(function () {
+        makeCounter('node-a')->tryAdd('app-id', 'u-1', 'sock-1', 5);
+        makeCounter('node-b')->tryAdd('app-id', 'u-1', 'sock-2', 5);
+    });
+
+    $written = $this->redis->keys('cap-test:*');
+    sort($written);
+
+    expect($written)->toBe([
+        'cap-test:{app-id:u-1}:node-a',
+        'cap-test:{app-id:u-1}:node-b',
+    ])->and(array_unique(array_map(SlotHasher::slotFor(...), $written)))->toHaveCount(1);
+});
+
+it('counts the untagged keys an older node still writes during a rolling upgrade', function () {
+    // An older node, mid-upgrade, holds two of the user's connections.
+    $this->redis->sadd('cap-test:app-id:u-1:old-node', ['old-1', 'old-2']);
+
+    $allowed = $count = null;
+
+    runLoop(function () use (&$allowed, &$count) {
+        $counter = makeCounter('node-a');
+
+        $allowed = $counter->tryAdd('app-id', 'u-1', 'sock-1', 2);
+        $count = $counter->count('app-id', 'u-1');
+    });
+
+    expect($allowed)->toBeFalse()
+        ->and($count)->toBe(2);
+});
+
+it('ignores untagged keys once legacy key reading is off', function () {
+    $this->redis->sadd('cap-test:app-id:u-1:old-node', ['old-1', 'old-2']);
+
+    $allowed = $count = null;
+
+    runLoop(function () use (&$allowed, &$count) {
+        $counter = makeCounter('node-a', legacyKeys: false);
+
+        $allowed = $counter->tryAdd('app-id', 'u-1', 'sock-1', 2);
+        $count = $counter->count('app-id', 'u-1');
+    });
+
+    expect($allowed)->toBeTrue()
+        ->and($count)->toBe(1);
 });

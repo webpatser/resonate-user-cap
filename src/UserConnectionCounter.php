@@ -2,7 +2,9 @@
 
 namespace Webpatser\ResonateUserCap;
 
+use Fledge\Async\Redis\Connection\RedisConnectionException;
 use Fledge\Async\Redis\RedisClient;
+use Throwable;
 
 /**
  * Cluster-wide count of a user's connections, backed by per-node Redis sets.
@@ -18,10 +20,15 @@ class UserConnectionCounter
      * Atomically count the union and conditionally SADD this node's socket.
      *
      * KEYS[1] is this node's set (always the write target and always counted);
-     * KEYS[2..n] are the other nodes' sets gathered by the caller. The script
+     * KEYS[2..n] are the other nodes' sets gathered by the caller. All of them
+     * share one hash tag, so the script also runs on Redis Cluster. The script
      * runs as one indivisible step, so concurrent subscribes for the same user
      * are serialised by Redis: every caller re-reads the live count before its
      * own add, which closes the check-then-add race that overshot the cap.
+     *
+     * ARGV[4] is the count the caller read from untagged keys older nodes
+     * still write during a rolling upgrade. Those live in other slots, so they
+     * are counted outside the script and only added in here.
      *
      * Returns 1 when the socket is counted (newly added, already present, or
      * the cap is disabled), 0 when the cap is reached and the add is refused.
@@ -35,7 +42,7 @@ class UserConnectionCounter
     end
 
     local cap = tonumber(ARGV[1])
-    local total = 0
+    local total = tonumber(ARGV[4]) or 0
 
     for i = 1, #KEYS do
         total = total + redis.call('SCARD', KEYS[i])
@@ -53,12 +60,16 @@ class UserConnectionCounter
 
     /**
      * Create a new counter.
+     *
+     * @param  bool  $legacyKeys  Also count the untagged keys older releases
+     *                            write, for the length of a rolling upgrade.
      */
     public function __construct(
         protected RedisClient $redis,
         protected PresenceCapKeys $keys,
         protected string $node,
         protected int $ttl,
+        protected bool $legacyKeys = false,
     ) {
         //
     }
@@ -68,7 +79,7 @@ class UserConnectionCounter
      */
     public function count(string $appId, string $userId): int
     {
-        $total = 0;
+        $total = $this->legacyCount($appId, $userId);
 
         foreach ($this->nodeKeys($appId, $userId) as $key) {
             $total += $this->redis->getSet($key)->getSize();
@@ -103,7 +114,7 @@ class UserConnectionCounter
         $allowed = $this->redis->eval(
             self::ADD_IF_UNDER_CAP,
             $keys,
-            [$cap, $socketId, $this->ttl],
+            [$cap, $socketId, $this->ttl, $this->legacyCount($appId, $userId)],
         );
 
         return (int) $allowed === 1;
@@ -200,5 +211,36 @@ class UserConnectionCounter
         }
 
         return $keys;
+    }
+
+    /**
+     * The connections older nodes hold for a user under untagged keys.
+     *
+     * Best effort by design: those keys hash to other slots, so on a Cluster
+     * this read can be redirected away from the node the client talks to. An
+     * older node never worked on a Cluster in the first place, so there is
+     * nothing to count there, and a read that fails counts as zero rather
+     * than refusing the subscribe. A lost connection is rethrown, so an
+     * outage surfaces here instead of after a second connect timeout.
+     */
+    protected function legacyCount(string $appId, string $userId): int
+    {
+        if (! $this->legacyKeys) {
+            return 0;
+        }
+
+        try {
+            $total = 0;
+
+            foreach ($this->redis->scan($this->keys->legacyUserScanPattern($appId, $userId), 100) as $key) {
+                $total += $this->redis->getSet($key)->getSize();
+            }
+
+            return $total;
+        } catch (RedisConnectionException $e) {
+            throw $e;
+        } catch (Throwable) {
+            return 0;
+        }
     }
 }

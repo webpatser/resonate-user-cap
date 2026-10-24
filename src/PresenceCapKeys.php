@@ -8,9 +8,19 @@ use RuntimeException;
  * The user-cap key schema.
  *
  * A user's connections on one Resonate node live in
- * "{prefix}:{appId}:{userId}:{nodeId}", a Redis set of socket ids. Per-node
+ * "{prefix}:{{appId}:{userId}}:{nodeId}", a Redis set of socket ids. Per-node
  * keys mean a dead node's count expires by TTL without a live node holding
  * it open, exactly the pattern resonate-roster uses.
+ *
+ * The inner braces are a Redis Cluster hash tag. Cluster hashes only what sits
+ * between the first "{" and the next "}", so every node's key for one user
+ * lands in the same slot and the cap script, which reads all of them in one
+ * EVAL, cannot fail with CROSSSLOT. A "}" inside a user id only ends the tag
+ * early; the tag is still identical for every node's key of that user.
+ *
+ * Keys written before the tag existed ("{prefix}:{appId}:{userId}:{nodeId}")
+ * are still matched by {@see legacyUserScanPattern()}, so a rolling upgrade
+ * keeps counting the connections that older nodes hold.
  */
 class PresenceCapKeys
 {
@@ -27,15 +37,37 @@ class PresenceCapKeys
      */
     public function userKey(string $appId, string $userId, string $node): string
     {
-        return $this->prefix.':'.$appId.':'.$this->encodeIdentity($userId).':'.$node;
+        return $this->userTag($appId, $userId).':'.$node;
     }
 
     /**
      * The SCAN pattern matching every node's key for one user on one app.
+     *
+     * Braces are literal in a Redis glob, so the tag needs no escaping here.
      */
     public function userScanPattern(string $appId, string $userId): string
     {
+        return $this->userTag($appId, $userId).':*';
+    }
+
+    /**
+     * The SCAN pattern matching the untagged keys older releases wrote.
+     *
+     * Only read, never written: it lets a node count the connections an
+     * older node still holds during a rolling upgrade. Those keys expire by
+     * TTL once the last older node is gone.
+     */
+    public function legacyUserScanPattern(string $appId, string $userId): string
+    {
         return $this->prefix.':'.$appId.':'.$this->encodeIdentity($userId).':*';
+    }
+
+    /**
+     * The hash-tagged part every node's key for one user shares.
+     */
+    protected function userTag(string $appId, string $userId): string
+    {
+        return $this->prefix.':{'.$appId.':'.$this->encodeIdentity($userId).'}';
     }
 
     /**

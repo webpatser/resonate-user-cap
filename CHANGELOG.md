@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `fail_open` (`RESONATE_USER_CAP_FAIL_OPEN`, default `false`): admit presence subscribes while the counter is unavailable instead. Admitted connections are tracked locally, so the first heartbeat after Redis recovers writes them into the count.
+- `legacy_keys` (`RESONATE_USER_CAP_LEGACY_KEYS`, default `false`): also count the untagged keys older releases write, so upgraded nodes keep counting connections held by nodes not yet upgraded. It costs one extra `SCAN` of the whole database per presence subscribe, so enable it only for a rolling upgrade and turn it off once every node is upgraded and one `ttl` has passed. Without it, a user's connections on older nodes go uncounted until the rollout ends (older nodes never count the new keys either way).
+
+### Changed
+
+- Per-node keys now carry a Redis Cluster hash tag: `{prefix}:{{app}:{user}}:{node}` (was `{prefix}:{app}:{user}:{node}`). Every key the cap script reads for one user shares a slot, so the script no longer fails with `CROSSSLOT` on Cluster. `key_prefix` must not contain `{` or `}`. Keys in the old format are only read (see `legacy_keys`) and expire by TTL.
 
 ## [0.7.0] - 2026-09-23
 

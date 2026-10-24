@@ -105,7 +105,7 @@ it('counts a connection on its first presence subscription', function () {
     expect($connection->terminated)->toBeFalse()
         ->and($connection->hasState('cap.user'))->toBeTrue()
         ->and($connection->state('cap.user'))->toBe('u-1')
-        ->and($this->redis->keys('cap-test:app-id:u-1:*'))->not->toBe([]);
+        ->and($this->redis->keys('cap-test:{app-id:u-1}:*'))->not->toBe([]);
 });
 
 it('rejects an over-cap subscribe before the subscription is established', function () {
@@ -282,7 +282,7 @@ it('keeps the identity from the first presence sub on later presence subs', func
     });
 
     expect($connection->state('cap.user'))->toBe('u-1')
-        ->and($this->redis->keys('cap-test:app-id:u-2:*'))->toBe([]);
+        ->and($this->redis->keys('cap-test:{app-id:u-2}:*'))->toBe([]);
 });
 
 it('reclaims a cap slot from a stale socket id on reconcile', function () {

@@ -17,10 +17,10 @@ Connections that never subscribe to a presence channel are never counted and nev
 For each `(app_id, user_id)`, the plugin keeps a per-node Redis set of the socket ids it currently holds:
 
 ```
-{prefix}:{app}:{user}:{node}    SET<socket_id>    (TTL refreshed by heartbeat)
+{prefix}:{{app}:{user}}:{node}    SET<socket_id>    (TTL refreshed by heartbeat)
 ```
 
-A user's cluster-wide count is the union of every node's set: `SCAN {prefix}:{app}:{user}:*` then `SCARD` each. This is the same self-healing pattern as `webpatser/resonate-roster`: a dead node's set expires on its own, and a live node never holds a dead node's count open.
+A user's cluster-wide count is the union of every node's set: `SCAN {prefix}:{{app}:{user}}:*` then `SCARD` each. The inner braces are a Redis Cluster hash tag, so every node's set for one user lives in the same slot and the atomic cap script can read them all in one `EVAL`. This is the same self-healing pattern as `webpatser/resonate-roster`: a dead node's set expires on its own, and a live node never holds a dead node's count open.
 
 ### Rejected before the subscription happens
 
@@ -79,6 +79,7 @@ Restart Resonate (`php artisan resonate:start`, or `resonate:reload` for a zero-
 return [
     'connection' => [ /* Redis */ ],
     'key_prefix' => 'cap',
+    'legacy_keys' => false,
     'ttl' => 90,
     'heartbeat_interval' => 30.0,
 
@@ -97,7 +98,8 @@ return [
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `connection` | `REDIS_*` env | Redis server; every node must point at the same server and database. Takes Laravel's connection keys, `scheme` (`tcp`, `tls`/`rediss`, `unix`), `read_timeout` and the retry keys included. |
-| `key_prefix` | `cap` | Namespace for the per-user sets. |
+| `key_prefix` | `cap` | Namespace for the per-user sets. Must not contain `{` or `}`. |
+| `legacy_keys` | `false` | Also count the untagged `{prefix}:{app}:{user}:{node}` keys releases before the hash tag wrote, so upgraded nodes keep counting older nodes' connections during a rolling upgrade. Costs one extra `SCAN` of the whole database per presence subscribe, so enable it only for the rollout and turn it off once every node is upgraded and one `ttl` has passed. |
 | `ttl` | `90` | Seconds each node's set lives; refreshed on every heartbeat. |
 | `heartbeat_interval` | `30.0` | Seconds between heartbeat ticks. |
 | `default` | `5` | Default cluster-wide cap per user. `0` disables capping. |

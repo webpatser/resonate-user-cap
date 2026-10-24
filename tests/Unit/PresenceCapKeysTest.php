@@ -1,12 +1,13 @@
 <?php
 
+use Fledge\Async\Redis\Cluster\SlotHasher;
 use Webpatser\ResonateUserCap\PresenceCapKeys;
 
 it('builds a per-node user key', function () {
     $keys = new PresenceCapKeys('cap');
 
     expect($keys->userKey('app-id', 'u-7', 'web-1-9001'))
-        ->toBe('cap:app-id:u-7:web-1-9001');
+        ->toBe('cap:{app-id:u-7}:web-1-9001');
 });
 
 it('builds a scan pattern that matches every node for one user', function () {
@@ -14,25 +15,56 @@ it('builds a scan pattern that matches every node for one user', function () {
 
     $pattern = $keys->userScanPattern('app-id', 'u-7');
 
+    expect($pattern)->toBe('cap:{app-id:u-7}:*')
+        ->and(fnmatch($pattern, 'cap:{app-id:u-7}:web-1-9001'))->toBeTrue()
+        ->and(fnmatch($pattern, 'cap:{app-id:u-70}:web-1-9001'))->toBeFalse();
+});
+
+it('hashes every node key of one user to the same cluster slot', function () {
+    $keys = new PresenceCapKeys('cap');
+
+    // The cap script reads all of these in one EVAL; on Redis Cluster that
+    // only works when they share a slot. Untagged keys spread across slots.
+    $slots = array_map(
+        fn (string $node) => SlotHasher::slotFor($keys->userKey('app-id', 'u-7', $node)),
+        ['web-1-9001', 'web-2-17', 'worker-3-4242', 'node'],
+    );
+
+    expect(array_unique($slots))->toHaveCount(1)
+        ->and($slots[0])->toBe(SlotHasher::slotFor('{app-id:u-7}'));
+});
+
+it('keeps the hash tag stable when a user id carries a brace', function () {
+    $keys = new PresenceCapKeys('cap');
+
+    expect(SlotHasher::slotFor($keys->userKey('app-id', 'u}7', 'web-1')))
+        ->toBe(SlotHasher::slotFor($keys->userKey('app-id', 'u}7', 'web-2')));
+});
+
+it('builds the legacy scan pattern for keys older releases wrote', function () {
+    $keys = new PresenceCapKeys('cap');
+
+    $pattern = $keys->legacyUserScanPattern('app-id', 'u-7');
+
     expect($pattern)->toBe('cap:app-id:u-7:*')
         ->and(fnmatch($pattern, 'cap:app-id:u-7:web-1-9001'))->toBeTrue()
-        ->and(fnmatch($pattern, 'cap:app-id:u-70:web-1-9001'))->toBeFalse();
+        ->and(fnmatch($pattern, $keys->userKey('app-id', 'u-7', 'web-1-9001')))->toBeFalse();
 });
 
 it('honours a custom prefix', function () {
     $keys = new PresenceCapKeys('user-limit');
 
-    expect($keys->userKey('a', 'u', 'n'))->toBe('user-limit:a:u:n');
+    expect($keys->userKey('a', 'u', 'n'))->toBe('user-limit:{a:u}:n');
 });
 
 it('encodes a colon in the user id so it cannot collide namespaces', function () {
     $keys = new PresenceCapKeys('cap');
 
-    // A raw colon would forge the key "cap:app-id:evil:admin:node", colliding
-    // with another user's namespace. It must be percent-encoded instead.
+    // A raw colon would forge the key "cap:{app-id:evil:admin}:node",
+    // colliding with another user's namespace. It must be percent-encoded.
     $key = $keys->userKey('app-id', 'evil:admin', 'node-1');
 
-    expect($key)->toBe('cap:app-id:evil%3Aadmin:node-1')
+    expect($key)->toBe('cap:{app-id:evil%3Aadmin}:node-1')
         ->and(substr_count($key, ':'))->toBe(3);
 
     // A user literally named "evil" on node "admin..." cannot collide with it.
@@ -47,16 +79,17 @@ it('encodes glob metacharacters so a scan pattern cannot be broadened', function
 
     // The injected "*" is encoded; only the trailing node wildcard remains, so
     // the pattern cannot match unrelated users like "u-7" or "u1".
-    expect($pattern)->toBe('cap:app-id:u%2A:*')
-        ->and(fnmatch($pattern, 'cap:app-id:u-7:node-1'))->toBeFalse()
-        ->and(fnmatch($pattern, 'cap:app-id:u%2A:node-1'))->toBeTrue();
+    expect($pattern)->toBe('cap:{app-id:u%2A}:*')
+        ->and(fnmatch($pattern, 'cap:{app-id:u-7}:node-1'))->toBeFalse()
+        ->and(fnmatch($pattern, 'cap:{app-id:u%2A}:node-1'))->toBeTrue()
+        ->and($keys->legacyUserScanPattern('app-id', 'u*'))->toBe('cap:app-id:u%2A:*');
 });
 
 it('encodes every reserved character injectively', function () {
     $keys = new PresenceCapKeys('cap');
 
     expect($keys->userKey('app-id', '%:*?[]\\', 'n'))
-        ->toBe('cap:app-id:%25%3A%2A%3F%5B%5D%5C:n');
+        ->toBe('cap:{app-id:%25%3A%2A%3F%5B%5D%5C}:n');
 });
 
 it('generates a colon-free node id', function () {
