@@ -89,6 +89,8 @@ return [
 
     'error_code' => 4301,
     'error_message' => 'Too many connections for this user',
+
+    'fail_open' => false,
 ];
 ```
 
@@ -101,6 +103,7 @@ return [
 | `default` | `5` | Default cluster-wide cap per user. `0` disables capping. |
 | `per_app` | `[]` | Per-app overrides keyed by app id. |
 | `error_code` / `error_message` | `4301` / text | The `pusher:error` payload sent before close. |
+| `fail_open` | `false` | When the counter cannot answer (Redis down), `false` refuses the presence subscribe with the error payload above; `true` admits it uncounted and lets the next heartbeat after recovery count it. Each outage is logged once. |
 
 ## Notes and caveats
 
@@ -109,6 +112,7 @@ return [
 - **Eventually consistent.** Concurrent connect bursts from one user across nodes may temporarily overshoot the cap by one; the next subscribe corrects it.
 - **One identity per connection.** A connection's `user_id` is taken from its *first* verified presence subscribe. Later presence subscribes with a different `user_id` are ignored for capping.
 - **Counted one step early.** A connection is counted when its subscribe is accepted by the cap, not when the subscription completes. If Resonate then refuses that subscribe for its own reasons (a subscription limit, say), the socket stays counted until it closes. Over-counting is the safe direction for a cap.
+- **Fails closed.** If Redis cannot be reached, a new presence subscribe is refused with the cap's error frame rather than admitted uncounted. Set `fail_open` to prefer availability over the cap during an outage.
 - **Self-healing count.** The heartbeat (`heartbeat_interval`, default 30s) rewrites each tracked user's set from the live connections, so a lost decrement costs a slot for at most one beat rather than until the next restart.
 
 ## Requirements

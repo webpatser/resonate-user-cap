@@ -5,6 +5,16 @@ All notable changes to `webpatser/resonate-user-cap` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Fail closed when the counter cannot answer. A Redis error in the cap check used to throw out of `onMessage`, which Resonate's plugin manager treats as a relay, so an unreachable Redis switched the cap off without a trace. The subscribe is now refused with the cap's `pusher:error` frame (`4301`), and each outage is logged once when it starts and once when it ends. `UserCapExceeded` is not dispatched for these refusals.
+
+### Added
+
+- `fail_open` (`RESONATE_USER_CAP_FAIL_OPEN`, default `false`): admit presence subscribes while the counter is unavailable instead. Admitted connections are tracked locally, so the first heartbeat after Redis recovers writes them into the count.
+
 ## [0.7.0] - 2026-09-23
 
 ### Changed

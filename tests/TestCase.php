@@ -102,6 +102,7 @@ class TestCase extends Testbench
             'per_app' => [],
             'error_code' => 4301,
             'error_message' => 'Too many connections for this user',
+            'fail_open' => false,
         ]);
     }
 }

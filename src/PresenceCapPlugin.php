@@ -5,7 +5,9 @@ namespace Webpatser\ResonateUserCap;
 use Fledge\Async\Redis\RedisConfig;
 use Illuminate\Support\Str;
 use JsonException;
+use Throwable;
 use Webpatser\Resonate\Contracts\Connection;
+use Webpatser\Resonate\Loggers\Log;
 use Webpatser\Resonate\Plugins\Contracts\ConnectionLifecycle;
 use Webpatser\Resonate\Plugins\Contracts\MessageInterceptor;
 use Webpatser\Resonate\Plugins\Contracts\ServerPlugin;
@@ -77,6 +79,20 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
     protected string $errorMessage;
 
     /**
+     * Whether a presence subscribe is admitted while the counter is unreachable.
+     *
+     * Off by default: a cap that silently switches off whenever Redis is down
+     * (or rejects the script, as a Cluster deployment used to) is no cap.
+     */
+    protected bool $failOpen = false;
+
+    /**
+     * Whether the counter is currently failing, so an outage is logged once
+     * when it starts and once when it ends instead of once per subscribe.
+     */
+    protected bool $counterFailing = false;
+
+    /**
      * The connections this node has counted: appId => userId => socketId => connection.
      *
      * This is what the node believes it holds, and the heartbeat writes it
@@ -113,6 +129,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
         $this->heartbeat = (float) ($config['heartbeat_interval'] ?? 30.0);
         $this->errorCode = (int) ($config['error_code'] ?? 4301);
         $this->errorMessage = (string) ($config['error_message'] ?? 'Too many connections for this user');
+        $this->failOpen = (bool) ($config['fail_open'] ?? false);
 
         $this->counter = new UserConnectionCounter(
             createRedisClient($this->makeConfig($config['connection'] ?? [])),
@@ -140,6 +157,11 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
      * subscription limit, say), the socket stays counted until it closes. That
      * errs towards over-counting the user who owns the socket, which is the
      * safe direction for a cap.
+     *
+     * A counter that cannot answer (Redis unreachable, a script error) refuses
+     * the subscribe the same way, unless `fail_open` is set. It used to throw
+     * out of here, and the plugin manager treats a throwing interceptor as a
+     * relay, so every outage silently switched the cap off.
      *
      * @param  array{event:string,channel?:string,data?:mixed}  $event
      */
@@ -190,23 +212,95 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
 
         // Count and add are one atomic Redis step: concurrent subscribes for
         // the same user can no longer all clear the check before any add lands.
-        if (! $this->counter->tryAdd($appId, $userId, $from->id(), $this->capFor($appId))) {
-            $this->context->terminate($from, 'pusher:error', [
-                'code' => $this->errorCode,
-                'message' => $this->errorMessage,
-            ]);
+        try {
+            $allowed = $this->counter->tryAdd($appId, $userId, $from->id(), $this->capFor($appId));
+        } catch (Throwable $e) {
+            return $this->counterUnavailable($from, $appId, $userId, $e);
+        }
+
+        $this->counterAnswered();
+
+        if (! $allowed) {
+            $this->refuse($from);
 
             UserCapExceeded::dispatch($appId, $userId);
 
             return MessageDisposition::Rejected;
         }
 
+        $this->track($from, $appId, $userId);
+
+        return MessageDisposition::Relay;
+    }
+
+    /**
+     * Decide a presence subscribe the counter could not answer.
+     *
+     * Fail closed by default: the subscribe is refused with the cap's error
+     * frame, which Pusher clients already treat as "back off and reconnect".
+     * With `fail_open` the connection is admitted and tracked locally, so the
+     * first heartbeat after Redis recovers writes it into the count.
+     *
+     * The failure is logged once per outage, not once per subscribe.
+     */
+    protected function counterUnavailable(Connection $from, string $appId, string $userId, Throwable $e): MessageDisposition
+    {
+        if (! $this->counterFailing) {
+            $this->counterFailing = true;
+
+            Log::error(sprintf(
+                'User cap counter unavailable, %s presence subscribes until it answers again: %s',
+                $this->failOpen ? 'admitting uncounted' : 'refusing',
+                $e->getMessage(),
+            ));
+        }
+
+        if ($this->failOpen) {
+            $this->track($from, $appId, $userId);
+
+            return MessageDisposition::Relay;
+        }
+
+        $this->refuse($from);
+
+        return MessageDisposition::Rejected;
+    }
+
+    /**
+     * Note that the counter answered, closing an outage if one was open.
+     */
+    protected function counterAnswered(): void
+    {
+        if (! $this->counterFailing) {
+            return;
+        }
+
+        $this->counterFailing = false;
+
+        Log::info('User cap counter', 'Redis answers again; the cap is enforced again.');
+    }
+
+    /**
+     * Send the cap's error frame and close the connection.
+     */
+    protected function refuse(Connection $from): void
+    {
+        $this->context->terminate($from, 'pusher:error', [
+            'code' => $this->errorCode,
+            'message' => $this->errorMessage,
+        ]);
+    }
+
+    /**
+     * Remember an identified connection, on the connection and in the registry
+     * the heartbeat writes into Redis.
+     */
+    protected function track(Connection $from, string $appId, string $userId): void
+    {
         $from->setState('cap.app', $appId);
         $from->setState('cap.user', $userId);
 
         $this->tracked[$appId][$userId][$from->id()] = $from;
-
-        return MessageDisposition::Relay;
     }
 
     /**

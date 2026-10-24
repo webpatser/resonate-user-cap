@@ -74,4 +74,18 @@ return [
 
     'error_message' => env('RESONATE_USER_CAP_ERROR_MESSAGE', 'Too many connections for this user'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Counter failures
+    |--------------------------------------------------------------------------
+    |
+    | What happens to a presence subscribe when the counter cannot answer
+    | (Redis unreachable, a script error). false refuses it with the error
+    | frame above; true admits it uncounted and lets the next heartbeat after
+    | Redis recovers write it into the count. Each outage is logged once.
+    |
+    */
+
+    'fail_open' => (bool) env('RESONATE_USER_CAP_FAIL_OPEN', false),
+
 ];
