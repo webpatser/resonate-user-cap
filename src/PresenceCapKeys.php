@@ -45,8 +45,7 @@ class PresenceCapKeys
     /**
      * Everything of a node's set key but the node id itself.
      *
-     * The cap script appends the node ids it reads from the registry to this,
-     * so it can reach every node's set without the caller listing them.
+     * The count appends the node ids it reads from the registry to this.
      */
     public function userKeyPrefix(string $appId, string $userId): string
     {

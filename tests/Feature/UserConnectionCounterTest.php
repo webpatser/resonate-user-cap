@@ -315,3 +315,51 @@ it('re-registers a pruned node on the next heartbeat sync', function () {
 
     expect($this->redis->smembers('cap-test:{app-id:u-1}:nodes'))->toBe(['node-a']);
 });
+
+it('declines to count a registered node whose set the caller did not declare', function () {
+    makeCounter('node-b')->add('app-id', 'u-1', 'sock-1');
+
+    $script = (new ReflectionClassConstant(UserConnectionCounter::class, 'ADD_IF_UNDER_CAP'))->getValue();
+
+    // A stale registry read: node-b registered after the caller looked, so
+    // its set is not among the declared keys and must not be read.
+    $result = $this->redis->eval(
+        $script,
+        2,
+        'cap-test:{app-id:u-1}:node-a',
+        'cap-test:{app-id:u-1}:nodes',
+        1,
+        'sock-2',
+        90,
+        'node-a',
+    );
+
+    expect($result)->toBe(-1)
+        ->and($this->redis->sismember('cap-test:{app-id:u-1}:node-a', 'sock-2'))->toBe(0)
+        ->and($this->redis->smembers('cap-test:{app-id:u-1}:nodes'))->toBe(['node-b']);
+});
+
+it('never lets concurrent adds from several nodes exceed the cap', function () {
+    $cap = 5;
+    $allowed = [];
+    $count = null;
+
+    runLoop(function () use ($cap, &$allowed, &$count) {
+        $counters = [makeCounter('node-a'), makeCounter('node-b'), makeCounter('node-c')];
+
+        // Nodes register while the others race, so cap checks keep finding a
+        // registry that changed since they read it and have to retry.
+        $closures = [];
+
+        for ($i = 0; $i < 60; $i++) {
+            $counter = $counters[$i % 3];
+            $closures[$i] = fn () => $counter->tryAdd('app-id', 'u-1', 'sock-'.$i, $cap);
+        }
+
+        $allowed = \Fledge\Async\disperse($closures);
+        $count = $counters[0]->count('app-id', 'u-1');
+    });
+
+    expect(array_sum(array_map('intval', $allowed)))->toBe($cap)
+        ->and($count)->toBe($cap);
+});

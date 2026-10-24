@@ -3,6 +3,7 @@
 namespace Webpatser\ResonateUserCap;
 
 use Fledge\Async\Redis\RedisClient;
+use RuntimeException;
 
 use function Fledge\Async\async;
 use function Fledge\Async\Future\await;
@@ -24,13 +25,26 @@ use function Fledge\Async\Future\await;
 class UserConnectionCounter
 {
     /**
+     * How often a cap check re-reads a registry that changed under it.
+     */
+    private const int MAX_ATTEMPTS = 5;
+
+    /**
      * Atomically count the user's connections and conditionally SADD a socket.
      *
      * KEYS[1] is this node's set (the write target), KEYS[2] the user's node
-     * registry. The other nodes' sets are reached through the registry
-     * (ARGV[5] is the key prefix the node ids are appended to). Those keys are
-     * not declared, which Redis Cluster allows because they share the hash tag
-     * of the declared keys and so live in the same slot.
+     * registry, and KEYS[3..] the sets of the other nodes the caller read from
+     * the registry just before; ARGV[5..] are those nodes' ids, in KEYS order.
+     * Every key the script touches is declared, as Redis requires: an
+     * undeclared key only happens to work on a Cluster while it shares the
+     * declared keys' slot, and during a slot migration Redis checks only the
+     * declared keys for ASK and TRYAGAIN, so an undeclared set already moved to
+     * the new master would read as empty, be pruned, and under-count the user.
+     *
+     * The registry can gain a node between the caller's read and this script.
+     * Such a node's set is not declared, so the script returns -1 instead of
+     * counting without it, and the caller re-reads the registry and retries.
+     * With the cap disabled the count does not matter and nothing is retried.
      *
      * A registered node whose set no longer exists has died without cleaning
      * up and its TTL ran out, so it is pruned from the registry on the way.
@@ -40,7 +54,8 @@ class UserConnectionCounter
      * count before its own add, which closes the check-then-add race.
      *
      * Returns 1 when the socket is counted (newly added, already present, or
-     * the cap is disabled), 0 when the cap is reached and the add is refused.
+     * the cap is disabled), 0 when the cap is reached and the add is refused,
+     * -1 when the registry holds a node the caller did not declare.
      */
     private const string ADD_IF_UNDER_CAP = <<<'LUA'
     local target = KEYS[1]
@@ -63,15 +78,28 @@ class UserConnectionCounter
 
     local cap = tonumber(ARGV[1])
     local total = redis.call('SCARD', target)
+    local declared = {}
+
+    for i = 5, #ARGV do
+        declared[ARGV[i]] = KEYS[i - 2]
+    end
 
     for _, member in ipairs(redis.call('SMEMBERS', registry)) do
         if member ~= node then
-            local size = redis.call('SCARD', ARGV[5] .. member)
+            local key = declared[member]
 
-            if size == 0 then
-                redis.call('SREM', registry, member)
+            if key == nil then
+                if cap > 0 then
+                    return -1
+                end
             else
-                total = total + size
+                local size = redis.call('SCARD', key)
+
+                if size == 0 then
+                    redis.call('SREM', registry, member)
+                else
+                    total = total + size
+                end
             end
         end
     end
@@ -179,24 +207,38 @@ class UserConnectionCounter
      *
      * A cap of 0 disables the limit, so the add always succeeds.
      *
+     * Reads the registry first so the script can declare every node's set,
+     * and re-reads it when another node registered in between.
+     *
      * Returns true when the socket is counted, false when the cap is reached
      * and the connection must be rejected.
+     *
+     * @throws RuntimeException when the registry changed on every attempt.
      */
     public function tryAdd(string $appId, string $userId, string $socketId, int $cap): bool
     {
-        $allowed = $this->redis->eval(
-            self::ADD_IF_UNDER_CAP,
-            $this->keysFor($appId, $userId),
-            [
-                $cap,
-                $socketId,
-                $this->ttl,
-                $this->node,
-                $this->keys->userKeyPrefix($appId, $userId),
-            ],
-        );
+        [$target, $registry] = $this->keysFor($appId, $userId);
 
-        return (int) $allowed === 1;
+        for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
+            $others = array_values(array_diff($this->redis->getSet($registry)->getAll(), [$this->node]));
+
+            $allowed = (int) $this->redis->eval(
+                self::ADD_IF_UNDER_CAP,
+                [$target, $registry, ...array_map(fn (string $node): string => $this->keys->userKey($appId, $userId, $node), $others)],
+                [$cap, $socketId, $this->ttl, $this->node, ...$others],
+            );
+
+            if ($allowed !== -1) {
+                return $allowed === 1;
+            }
+        }
+
+        // The plugin treats this like any other counter failure: fail closed
+        // unless fail_open is set.
+        throw new RuntimeException(sprintf(
+            'The user-cap node registry kept changing; gave up after %d attempts.',
+            self::MAX_ATTEMPTS,
+        ));
     }
 
     /**
