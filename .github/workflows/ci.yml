@@ -85,6 +85,10 @@ jobs:
               done
               echo "node :$port ready"
             done
+            until [ "$(docker exec redis-cluster redis-cli -p 17000 cluster nodes | grep -c slave)" -ge 3 ]; do
+              sleep 2
+            done
+            echo "replicas attached"
           '
 
       - name: Run cluster tests
