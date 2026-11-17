@@ -5,6 +5,14 @@ All notable changes to `webpatser/resonate-user-cap` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The heartbeat reconcile pass no longer erases a socket that was counted while the pass was running, which could let a user exceed the presence cap. A user's sockets are read again right before that user is synced, and synced again if a socket arrived meanwhile, at most 3 syncs per user per pass; after that, sockets the last sync missed are added individually.
+- A newly admitted connection is tracked before the recovery log line is written, so a log channel that suspends cannot hide it from the reconcile pass.
+- Known inaccuracy: a socket that closes during a pass may stay counted until the next heartbeat.
+
 ## [1.0.0] - 2026-10-24
 
 ### Added
