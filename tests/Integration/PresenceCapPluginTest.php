@@ -11,6 +11,9 @@ use Webpatser\ResonateUserCap\PresenceCapKeys;
 use Webpatser\ResonateUserCap\PresenceCapPlugin;
 use Webpatser\ResonateUserCap\Tests\Support\FakeConnection;
 
+use function Fledge\Async\async;
+use function Fledge\Async\Future\await;
+
 beforeEach(function () {
     if (! redisReachable()) {
         $this->markTestSkipped('Redis not reachable');
@@ -368,6 +371,168 @@ it('keeps a live connection counted across a reconcile', function () {
 
     expect($this->redis->smembers(nodeKey('u-1')))->toBe(['sock-1'])
         ->and($this->redis->ttl(nodeKey('u-1')))->toBeGreaterThan(0);
+});
+
+/**
+ * Count one connection each for a batch of filler users.
+ *
+ * They sit ahead of the user under test in the plugin's registry, so a
+ * heartbeat pass spends one Redis round trip per filler before it reaches
+ * that user, which is the window a concurrent subscribe lands in.
+ */
+function countFillerUsers(PresenceCapPlugin $plugin, int $count): void
+{
+    $app = app(ApplicationProvider::class)->findById('app-id');
+
+    for ($i = 0; $i < $count; $i++) {
+        capSubscribe($plugin, new FakeConnection("filler-sock-{$i}", $app), 'presence-filler-'.uniqid(), "filler-{$i}");
+    }
+}
+
+it('keeps a socket counted that subscribed while the heartbeat pass was running', function () {
+    // Default cap in the test config is 2.
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+
+    $first = new FakeConnection('sock-1', $app);
+    $midPass = new FakeConnection('sock-2', $app);
+    $overCap = new FakeConnection('sock-3', $app);
+
+    $room = 'presence-room-'.uniqid();
+    $plugin = new PresenceCapPlugin;
+    $members = null;
+
+    runLoop(function () use ($plugin, $context, $first, $midPass, $overCap, $room, &$members) {
+        $plugin->boot($context);
+
+        countFillerUsers($plugin, 30);
+        capSubscribe($plugin, $first, $room, 'u-1');
+
+        // The second socket is counted while the pass is still syncing the
+        // fillers, so the pass reaches u-1 after it was added.
+        await([
+            async(fn () => $plugin->ticks()[0]['callback']()),
+            async(fn () => capSubscribe($plugin, $midPass, $room, 'u-1')),
+        ]);
+
+        $members = $this->redis->smembers(nodeKey('u-1'));
+
+        // The user holds two sockets, so a third is over the cap.
+        capSubscribe($plugin, $overCap, $room, 'u-1');
+    });
+
+    sort($members);
+
+    expect($midPass->terminated)->toBeFalse()
+        ->and($members)->toBe(['sock-1', 'sock-2'])
+        ->and($overCap->terminated)->toBeTrue();
+});
+
+it('keeps a user tracked that came back while the heartbeat pass was running', function () {
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+
+    $gone = new FakeConnection('sock-1', $app);
+    $returning = new FakeConnection('sock-2', $app);
+
+    $room = 'presence-room-'.uniqid();
+    $plugin = new PresenceCapPlugin;
+
+    runLoop(function () use ($plugin, $context, $gone, $returning, $room, $app) {
+        $plugin->boot($context);
+
+        countFillerUsers($plugin, 30);
+        capSubscribe($plugin, $gone, $room, 'u-1');
+
+        // The user's only socket closes, leaving nothing for the pass to sync.
+        app(ChannelManager::class)->for($app)->unsubscribeFromAll($gone);
+        $plugin->onClose($gone);
+
+        // The user reconnects while the pass is syncing the fillers.
+        await([
+            async(fn () => $plugin->ticks()[0]['callback']()),
+            async(fn () => capSubscribe($plugin, $returning, $room, 'u-1')),
+        ]);
+
+        // A later heartbeat must still know about the returning socket.
+        $plugin->ticks()[0]['callback']();
+    });
+
+    expect($returning->terminated)->toBeFalse()
+        ->and($this->redis->smembers(nodeKey('u-1')))->toBe(['sock-2']);
+});
+
+it('bounds the re-sync for a user whose sockets keep arriving and still reconciles the rest', function () {
+    // No cap, so the churn below is never refused.
+    config()->set('resonate-user-cap.default', 0);
+
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+
+    $room = 'presence-churn-'.uniqid();
+    $plugin = new PresenceCapPlugin;
+    $redis = $this->redis;
+    $limit = 400;
+    $result = [];
+
+    runLoop(function () use ($plugin, $context, $app, $room, $redis, $limit, &$result) {
+        $plugin->boot($context);
+
+        // Fillers first, so the churn is in full swing when the pass reaches
+        // the churning user; the user after it carries a ghost to clear.
+        countFillerUsers($plugin, 10);
+        capSubscribe($plugin, new FakeConnection('churn-0', $app), $room, 'u-churn');
+        capSubscribe($plugin, new FakeConnection('after-1', $app), 'presence-after-'.uniqid(), 'u-after');
+        $redis->sadd(nodeKey('u-after'), ['ghost-sock']);
+
+        $done = false;
+        $admitted = ['churn-0'];
+
+        $counter = (new ReflectionProperty(PresenceCapPlugin::class, 'counter'))->getValue($plugin);
+
+        // Through the interceptor only: the socket is counted and tracked in
+        // two Redis round trips (SMEMBERS, then the script), without the
+        // presence broadcast of a join. Odd workers start one round trip late
+        // on the same connection, so half of them are always one reply away
+        // from tracking a socket and the registry gains sockets during every
+        // sync of the pass, not just every other one.
+        // A plain closure, not an arrow function: the workers must share the
+        // stop flag and the admitted list by reference with this fiber.
+        $workers = array_map(function (int $worker) use ($plugin, $counter, $app, $room, $limit, &$done, &$admitted) {
+            return async(function () use ($plugin, $counter, $app, $room, $limit, $worker, &$done, &$admitted) {
+                if ($worker % 2 === 1) {
+                    $counter->count('app-id', 'nobody');
+                }
+
+                for ($i = 0; ! $done && count($admitted) < $limit; $i++) {
+                    $connection = new FakeConnection("churn-{$worker}-{$i}", $app);
+
+                    $plugin->onMessage($connection, subscribeMessage($connection, $room, 'u-churn'));
+
+                    $admitted[] = $connection->id();
+                }
+            });
+        }, range(1, 16));
+
+        $plugin->ticks()[0]['callback']();
+
+        $done = true;
+
+        $result = [
+            'admitted' => $admitted,
+            'churn' => $redis->smembers(nodeKey('u-churn')),
+            'after' => $redis->smembers(nodeKey('u-after')),
+        ];
+
+        await($workers);
+    });
+
+    // The pass ended while the churn was still running, every socket counted
+    // by then is in Redis (the bounded exit only ever over-counts), and the
+    // user after the churning one was still reconciled.
+    expect(count($result['admitted']))->toBeLessThan($limit)
+        ->and(array_values(array_diff($result['admitted'], $result['churn'])))->toBe([])
+        ->and($result['after'])->toBe(['after-1']);
 });
 
 it('restores a counted socket that is live in a presence channel', function () {

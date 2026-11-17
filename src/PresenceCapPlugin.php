@@ -44,6 +44,15 @@ use function Fledge\Async\Redis\createRedisClusterClient;
 class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, ServerPlugin, TickScheduler
 {
     /**
+     * Syncs per user per heartbeat before the pass stops rewriting the set.
+     *
+     * One re-sync covers a subscribe that was in flight during the first sync.
+     * Needing a third means sockets arrive on every round trip, which is churn
+     * no rewrite will catch up with, so the rest is added without one.
+     */
+    private const int MAX_SYNCS_PER_USER = 3;
+
+    /**
      * The server API surface handed in at boot.
      */
     protected PluginContext $context;
@@ -220,6 +229,13 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
             return $this->counterUnavailable($from, $appId, $userId, $e);
         }
 
+        // Track before anything that may suspend this fiber (the recovery log
+        // line can, depending on the log channel): a heartbeat pass resuming
+        // in between would otherwise sync this user without the new socket.
+        if ($allowed) {
+            $this->track($from, $appId, $userId);
+        }
+
         $this->counterAnswered();
 
         if (! $allowed) {
@@ -229,8 +245,6 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
 
             return MessageDisposition::Rejected;
         }
-
-        $this->track($from, $appId, $userId);
 
         return MessageDisposition::Relay;
     }
@@ -387,31 +401,85 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
      * anything Redis holds that this node no longer holds is removed, anything
      * live that is missing is added back, and users with nothing left are
      * dropped from Redis and from the registry.
+     *
+     * Every sync suspends this fiber, so subscribes and closes run in the
+     * middle of the pass. The registry is therefore read afresh right before
+     * each user's sync rather than from a copy taken when the pass began: a
+     * copy missed a socket counted meanwhile, and the sync then erased it from
+     * Redis, letting the user exceed the cap.
      */
     protected function reconcile(): void
     {
-        if ($this->counter === null) {
+        $counter = $this->counter;
+
+        if ($counter === null) {
             return;
         }
 
-        foreach ($this->tracked as $appId => $users) {
+        foreach (array_keys($this->tracked) as $appId) {
+            $appId = (string) $appId;
+
+            // Read once per app: a socket that closed since only stays counted
+            // until the next heartbeat, the safe direction for a cap.
             $live = $this->liveSocketsByUser($appId);
 
-            foreach ($users as $userId => $connections) {
-                $sockets = array_values(array_unique([
-                    ...array_map(strval(...), array_keys($connections)),
-                    ...($live[$userId] ?? []),
-                ]));
+            foreach (array_keys($this->tracked[$appId] ?? []) as $userId) {
+                $userId = (string) $userId;
 
-                if (! $this->counter->sync($appId, $userId, $sockets)) {
-                    unset($this->tracked[$appId][$userId]);
-                }
+                $this->reconcileUser($counter, $appId, $userId, $live[$userId] ?? []);
             }
 
-            if ($this->tracked[$appId] === []) {
+            if (($this->tracked[$appId] ?? null) === []) {
                 unset($this->tracked[$appId], $this->presenceChannels[$appId]);
             }
         }
+    }
+
+    /**
+     * Write one user's sockets on this node into Redis.
+     *
+     * A socket counted while the sync was in flight may have been added to
+     * Redis just before the sync replaced the set, so the sync runs again
+     * whenever the registry gained a socket it did not send, up to
+     * {@see self::MAX_SYNCS_PER_USER} times. A user whose sockets still keep
+     * arriving after that is topped up instead: the sockets the last sync
+     * missed are added one by one, which never removes anything, so whatever
+     * this pass leaves wrong can only over-count until the next heartbeat. The
+     * user leaves the registry only when it is still empty after the sync.
+     *
+     * @param  list<string>  $live
+     */
+    protected function reconcileUser(UserConnectionCounter $counter, string $appId, string $userId, array $live): void
+    {
+        $syncs = 0;
+
+        do {
+            $sockets = array_values(array_unique([...$this->trackedSockets($appId, $userId), ...$live]));
+
+            $kept = $counter->sync($appId, $userId, $sockets);
+
+            $missed = array_diff($this->trackedSockets($appId, $userId), $sockets);
+        } while ($missed !== [] && ++$syncs < self::MAX_SYNCS_PER_USER);
+
+        foreach ($missed as $socketId) {
+            $counter->add($appId, $userId, $socketId);
+
+            $kept = true;
+        }
+
+        if (! $kept && $this->trackedSockets($appId, $userId) === []) {
+            unset($this->tracked[$appId][$userId]);
+        }
+    }
+
+    /**
+     * The socket ids this node currently counts for a user.
+     *
+     * @return list<string>
+     */
+    protected function trackedSockets(string $appId, string $userId): array
+    {
+        return array_map(strval(...), array_keys($this->tracked[$appId][$userId] ?? []));
     }
 
     /**

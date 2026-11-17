@@ -171,6 +171,59 @@ it('admits and tracks a subscribe the counter cannot answer when fail_open is se
         ->and($this->logger->errors[0])->toContain('admitting uncounted');
 });
 
+it('tracks the admitted connection before logging that the counter recovered', function () {
+    if (! redisReachable()) {
+        $this->markTestSkipped('Redis not reachable');
+    }
+
+    $redis = new Client(['host' => '127.0.0.1', 'port' => 6379, 'database' => 15]);
+
+    foreach ($redis->keys('cap-test:*') as $key) {
+        $redis->del($key);
+    }
+
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+
+    $during = new FakeConnection('sock-1', $app);
+    $after = new FakeConnection('sock-2', $app);
+    $plugin = new PresenceCapPlugin;
+
+    // A log channel may suspend the fiber while it writes, letting a heartbeat
+    // pass run. Record whether the admitted connection was tracked by then.
+    $logger = new class($after) extends FakeLogger
+    {
+        /** @var list<bool> */
+        public array $trackedWhenLogged = [];
+
+        public function __construct(private FakeConnection $watched) {}
+
+        public function info(string $title, ?string $message = null): void
+        {
+            $this->trackedWhenLogged[] = $this->watched->hasState('cap.user');
+
+            parent::info($title, $message);
+        }
+    };
+
+    useResonateLogger($logger);
+
+    runLoop(function () use ($plugin, $context, $during, $after) {
+        $plugin->boot($context);
+
+        $plugin->onMessage($during, signedPresenceSubscribe($during, 'u-1'));
+
+        swapCounter($plugin, counterOnPort(6379));
+        $plugin->onMessage($after, signedPresenceSubscribe($after, 'u-1'));
+    });
+
+    foreach ($redis->keys('cap-test:*') as $key) {
+        $redis->del($key);
+    }
+
+    expect($logger->trackedWhenLogged)->toBe([true]);
+});
+
 it('logs each outage once and enforces the cap again in between', function () {
     if (! redisReachable()) {
         $this->markTestSkipped('Redis not reachable');
