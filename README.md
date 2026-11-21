@@ -132,11 +132,15 @@ return [
 
 ## Requirements
 
-- PHP 8.5+
-- Resonate 1.0+
+- PHP 8.6+
+- Resonate 1.4+
 - A Redis server (or a Redis Cluster) reachable from every Resonate node
 
 Upgrading from 0.7? See [UPGRADE.md](UPGRADE.md).
+
+## PHP version policy
+
+This package supports only the latest stable PHP release. When a new PHP version is released, the next release of this package requires it and support for the previous PHP version ends. Currently: PHP 8.6.
 
 ## Testing
 

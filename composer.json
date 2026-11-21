@@ -11,19 +11,20 @@
         }
     ],
     "require": {
-        "php": "^8.5",
+        "php": "^8.6",
         "illuminate/contracts": "^13.0",
         "illuminate/support": "^13.0",
-        "webpatser/fledge-fiber": "^13.38.0.3",
-        "webpatser/resonate": "^1.0"
+        "webpatser/fledge-fiber": "^13.43.0.3",
+        "webpatser/resonate": "^1.4"
     },
     "require-dev": {
         "larastan/larastan": "^3.10",
         "laravel/pint": "^1.30",
-        "orchestra/testbench": "^10.0|^11.0",
-        "pestphp/pest": "^4.0",
+        "orchestra/testbench": "^11.0",
+        "pestphp/pest": "^5.0",
         "phpstan/phpstan": "^2.2",
-        "predis/predis": "^2.2"
+        "predis/predis": "^2.2",
+        "webpatser/fledge-loop": "^0.1"
     },
     "autoload": {
         "psr-4": {
@@ -43,9 +44,9 @@
         }
     },
     "scripts": {
-        "analyse": "phpstan analyse",
+        "analyse": "@php -d memory_limit=-1 vendor/bin/phpstan analyse",
         "lint": "pint --test",
-        "test": "pest"
+        "test": "@php -d zend.assertions=1 -d assert.exception=1 vendor/bin/pest"
     },
     "config": {
         "sort-packages": true,

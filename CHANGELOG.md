@@ -5,6 +5,16 @@ All notable changes to `webpatser/resonate-user-cap` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-21
+
+### Changed
+
+- **Breaking:** PHP 8.6 or newer is required (`"php": "^8.6"`). PHP 8.5 is no longer supported, and CI runs on 8.6 only, with assertions on.
+- Requires `webpatser/resonate` `^1.4` and `webpatser/fledge-fiber` `^13.43.0.3`.
+- The event loop is `Fledge\Loop` (`webpatser/fledge-loop`) instead of `Revolt\EventLoop`. The package's own code does not call it; the test suite does and requires `webpatser/fledge-loop` as a development dependency. Plugin hosts that call `Revolt\EventLoop` must switch to `Fledge\Loop`.
+- Language pass over `src/` for PHP 8.6: nothing was a clear, provably equivalent win, so public API and behaviour are unchanged.
+- Development dependencies: `pestphp/pest` moves to `^5.0` (PHPUnit 13), since Pest 4 cannot be installed on PHP 8.6, and `orchestra/testbench` to `^11.0`.
+
 ## [1.0.1] - 2026-11-18
 
 ### Fixed

@@ -11,7 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    name: PHP 8.5
+    name: PHP 8.6
 
     # The integration suite skips itself unless a Redis server answers on
     # 127.0.0.1:6379, so CI runs one alongside the job.
@@ -33,9 +33,10 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.5'
+          php-version: '8.6'
           coverage: none
           tools: composer:v2
+          ini-values: zend.assertions=1, assert.exception=1
 
       - name: Install dependencies
         run: composer install --no-progress --no-interaction --prefer-dist
@@ -47,10 +48,10 @@ jobs:
         run: ./vendor/bin/pint --test
 
       - name: Run static analysis
-        run: ./vendor/bin/phpstan analyse
+        run: php -d memory_limit=-1 vendor/bin/phpstan analyse
 
       - name: Run tests
-        run: ./vendor/bin/pest
+        run: php -d zend.assertions=1 -d assert.exception=1 vendor/bin/pest
 
   cluster:
     runs-on: ubuntu-latest
@@ -65,9 +66,10 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.5'
+          php-version: '8.6'
           coverage: none
           tools: composer:v2
+          ini-values: zend.assertions=1, assert.exception=1
 
       - name: Install dependencies
         run: composer install --no-progress --no-interaction --prefer-dist
@@ -94,4 +96,4 @@ jobs:
       - name: Run cluster tests
         env:
           RESONATE_USER_CAP_TEST_CLUSTER_NODES: 127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002
-        run: ./vendor/bin/pest tests/Integration/ClusterTest.php
+        run: php -d zend.assertions=1 -d assert.exception=1 vendor/bin/pest tests/Integration/ClusterTest.php
