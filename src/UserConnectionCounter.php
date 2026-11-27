@@ -224,7 +224,7 @@ class UserConnectionCounter
 
             $allowed = (int) $this->redis->eval(
                 self::ADD_IF_UNDER_CAP,
-                [$target, $registry, ...array_map(fn (string $node): string => $this->keys->userKey($appId, $userId, $node), $others)],
+                [$target, $registry, ...array_map($this->keys->userKey($appId, $userId, ?), $others)],
                 [$cap, $socketId, $this->ttl, $this->node, ...$others],
             );
 

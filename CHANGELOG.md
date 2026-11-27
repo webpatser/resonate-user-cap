@@ -5,6 +5,12 @@ All notable changes to `webpatser/resonate-user-cap` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-11-27
+
+### Changed
+
+- PHP 8.6 partial application replaces two forwarding closures (`$this->keys->userKey($appId, $userId, ?)` in `UserConnectionCounter`, `$this->clusterSeed(?, $template)` in `PresenceCapPlugin`). Behaviour is unchanged.
+
 ## [1.1.0] - 2026-11-22
 
 ### Changed
@@ -206,6 +212,7 @@ Initial release.
 - `UserCapServiceProvider`: merges config and publishes it via
   `vendor:publish --tag=resonate-user-cap-config`.
 
+[1.1.1]: https://github.com/webpatser/resonate-user-cap/compare/v1.1.0...v1.1.1
 [1.0.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.2...v1.0.0
 [0.7.2]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.0...v0.7.1

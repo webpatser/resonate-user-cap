@@ -616,7 +616,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
         $template = $this->makeConfig($server)->withDatabase(0);
 
         return array_map(
-            fn (string $seed): RedisConfig|string => $this->clusterSeed($seed, $template),
+            $this->clusterSeed(?, $template),
             $seeds,
         );
     }
