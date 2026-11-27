@@ -129,6 +129,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
     /**
      * Boot the plugin: open the Redis client and build the counter.
      */
+    #[\Override]
     public function boot(PluginContext $context): void
     {
         $this->context = $context;
@@ -176,6 +177,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
      *
      * @param  array{event:string,channel?:string,data?:mixed}  $event
      */
+    #[\Override]
     public function onMessage(Connection $from, array $event): MessageDisposition
     {
         if ($this->counter === null || $event['event'] !== 'pusher:subscribe') {
@@ -322,6 +324,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
     /**
      * Handle a connection opening. Identity is not known yet, so do nothing.
      */
+    #[\Override]
     public function onOpen(Connection $connection): void
     {
         //
@@ -334,6 +337,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
      * exists. All this hook does is give the heartbeat a channel list to read
      * live membership from.
      */
+    #[\Override]
     public function onSubscribe(Connection $connection, Channel $channel): void
     {
         if (! $this->isPresenceChannel($channel) || ! $connection->hasState('cap.user')) {
@@ -347,6 +351,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
      * The cap is per connection, not per channel, so leaving a single channel
      * does not change the count. Nothing to do here.
      */
+    #[\Override]
     public function onUnsubscribe(Connection $connection, Channel $channel): void
     {
         //
@@ -355,6 +360,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
     /**
      * Decrement the user's count when an identified connection closes.
      */
+    #[\Override]
     public function onClose(Connection $connection): void
     {
         if ($this->counter === null || ! $connection->hasState('cap.user')) {
@@ -381,6 +387,7 @@ class PresenceCapPlugin implements ConnectionLifecycle, MessageInterceptor, Serv
      *
      * @return array<int, array{interval: float, callback: callable():void}>
      */
+    #[\Override]
     public function ticks(): array
     {
         return [

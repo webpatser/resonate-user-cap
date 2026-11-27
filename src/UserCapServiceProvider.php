@@ -15,6 +15,7 @@ class UserCapServiceProvider extends ServiceProvider
     /**
      * Register the package services.
      */
+    #[\Override]
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/resonate-user-cap.php', 'resonate-user-cap');

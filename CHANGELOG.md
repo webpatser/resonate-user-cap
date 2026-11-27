@@ -5,6 +5,12 @@ All notable changes to `webpatser/resonate-user-cap` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-11-27
+
+### Changed
+
+- `#[\Override]` on the methods that implement the Resonate plugin contracts and on `UserCapServiceProvider::register()`. Behaviour is unchanged.
+
 ## [1.1.1] - 2026-11-27
 
 ### Changed
@@ -212,6 +218,7 @@ Initial release.
 - `UserCapServiceProvider`: merges config and publishes it via
   `vendor:publish --tag=resonate-user-cap-config`.
 
+[1.1.2]: https://github.com/webpatser/resonate-user-cap/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/webpatser/resonate-user-cap/compare/v1.1.0...v1.1.1
 [1.0.0]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.2...v1.0.0
 [0.7.2]: https://github.com/webpatser/resonate-user-cap/compare/v0.7.1...v0.7.2
