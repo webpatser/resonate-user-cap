@@ -20,6 +20,8 @@ use function Fledge\Async\Redis\createRedisClusterClient;
  *
  * e.g. `docker run -d -e IP=0.0.0.0 -e INITIAL_PORT=17000 -e MASTERS=3
  * -e SLAVES_PER_MASTER=1 -p 17000-17005:17000-17005 grokzen/redis-cluster:7.0.10`.
+ * Wait for it with `bash .github/scripts/wait-for-redis-cluster.sh <container>`
+ * first: until every replica has attached, nodes still report it as a master.
  */
 beforeEach(function () {
     $nodes = (string) getenv('RESONATE_USER_CAP_TEST_CLUSTER_NODES');
